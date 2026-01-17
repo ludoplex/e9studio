@@ -58,10 +58,19 @@ PAL_SRCS = \
 IDE_SRCS = \
     src/e9patch/ide/clion_bridge.cpp
 
-# Analysis engine sources (Ghidra-like capabilities)
+# Analysis engine sources (Ghidra-like + binwalk/polyfile/polytracker-inspired)
 ANALYSIS_SRCS = \
     src/e9patch/analysis/e9analysis.c \
-    src/e9patch/analysis/e9studio_analysis.c
+    src/e9patch/analysis/e9studio_analysis.c \
+    src/e9patch/analysis/e9polyglot.c
+
+# Analysis headers (for reference):
+# - e9analysis.h      : Core binary analysis (disasm, CFG, decompile)
+# - e9polyglot.h      : Polyglot/schizophrenic file detection (polyfile)
+# - e9compress.h      : Compression/encryption detection
+# - e9obfuscate.h     : Obfuscation detection/removal
+# - e9taint.h         : Taint tracking/parser identification (polytracker)
+# - e9forensics.h     : Unified forensics and deep analysis
 
 # e9patch core sources (existing)
 E9PATCH_CORE_SRCS = \

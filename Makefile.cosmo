@@ -172,6 +172,46 @@ $(BUILD_DIR)/e9patch-wasm3.com: $(E9PATCH_OBJS) | $(BUILD_DIR)
 	@echo "Built APE with embedded wasm3: $@"
 
 #########################################################################
+# E9Studio - Self-contained binary rewriting environment
+#########################################################################
+
+# E9Studio sources (C for simpler Cosmopolitan build)
+E9STUDIO_SRCS = \
+    src/e9patch/wasm/e9wasm_host.c \
+    src/e9patch/wasm/e9studio.c
+
+E9STUDIO_OBJS = $(E9STUDIO_SRCS:.c=.cosmo.o)
+
+# Compile C sources with Cosmopolitan
+%.cosmo.o: %.c | $(BUILD_DIR)
+	$(CC) $(COSMO_CFLAGS) -Wall -c $< -o $@
+
+# E9Studio without wasm3 (native only mode)
+studio: $(BUILD_DIR)/e9studio.com
+
+$(BUILD_DIR)/e9studio.com: $(E9STUDIO_OBJS) | $(BUILD_DIR)
+	$(CC) $(COSMO_CFLAGS) $(E9STUDIO_OBJS) -o $@ $(COSMO_LDFLAGS)
+	@echo "Built E9Studio: $@"
+	@echo "Self-contained binary rewriting environment - no browser needed"
+
+# E9Studio with wasm3 (full WASM support)
+studio-wasm3: COSMO_CFLAGS += $(WASM3_CFLAGS)
+studio-wasm3: $(BUILD_DIR)/e9studio-wasm3.com
+
+$(BUILD_DIR)/e9studio-wasm3.com: $(E9STUDIO_OBJS) | $(BUILD_DIR)
+	$(CC) $(COSMO_CFLAGS) $(E9STUDIO_OBJS) -o $@ $(COSMO_LDFLAGS) \
+		$(WASM3_PATH)/build/libm3.a
+	@echo "Built E9Studio with wasm3: $@"
+
+# Bundle WASM modules into ZipOS
+studio-bundle: studio-wasm3 wasm
+	@echo "Bundling WASM modules into E9Studio..."
+	cp $(BUILD_DIR)/e9studio-wasm3.com $(BUILD_DIR)/e9studio-bundle.com
+	zip -j $(BUILD_DIR)/e9studio-bundle.com $(BUILD_DIR)/e9patch.wasm
+	@echo "Built bundled E9Studio: $(BUILD_DIR)/e9studio-bundle.com"
+	@echo "Contains: e9patch.wasm in ZipOS"
+
+#########################################################################
 # Release and Debug Builds
 #########################################################################
 
@@ -235,18 +275,30 @@ help:
 	@echo "E9Patch Cosmopolitan Build System"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all          - Build APE binary (runs on any OS)"
-	@echo "  wasm         - Build WASM module (for browser)"
-	@echo "  wasm3-host   - Build APE with embedded wasm3 interpreter"
-	@echo "  release      - Build optimized APE"
-	@echo "  debug        - Build debug APE"
-	@echo "  install      - Install to PREFIX"
-	@echo "  clean        - Remove build artifacts"
-	@echo "  test         - Test built binary"
-	@echo "  test-ide     - Test with IDE integration"
+	@echo "  all           - Build APE binary (runs on any OS)"
+	@echo "  wasm          - Build WASM module (for browser)"
+	@echo "  wasm3-host    - Build APE with embedded wasm3 interpreter"
+	@echo "  studio        - Build E9Studio (self-contained, no browser)"
+	@echo "  studio-wasm3  - Build E9Studio with wasm3 support"
+	@echo "  studio-bundle - Build E9Studio with WASM modules in ZipOS"
+	@echo "  release       - Build optimized APE"
+	@echo "  debug         - Build debug APE"
+	@echo "  install       - Install to PREFIX"
+	@echo "  clean         - Remove build artifacts"
+	@echo "  test          - Test built binary"
+	@echo "  test-ide      - Test with IDE integration"
+	@echo ""
+	@echo "E9Studio (replaces Chrome/browser):"
+	@echo "  Self-contained binary rewriting environment"
+	@echo "  - Embedded wasm3 interpreter"
+	@echo "  - Direct ZipOS access (zero-copy mmap)"
+	@echo "  - Terminal UI for interactive editing"
+	@echo "  - File watcher for hot-reload"
+	@echo "  - Self-modifying APE (save patches to own ZipOS)"
 	@echo ""
 	@echo "Variables:"
 	@echo "  COSMO_PATH   - Path to Cosmopolitan (default: /opt/cosmo)"
+	@echo "  WASM3_PATH   - Path to wasm3 (default: COSMO_PATH/third_party/wasm3)"
 	@echo "  PREFIX       - Install prefix (default: /usr/local)"
 	@echo ""
 	@echo "Requirements:"

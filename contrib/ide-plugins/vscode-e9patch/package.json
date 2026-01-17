@@ -1,0 +1,147 @@
+{
+  "name": "e9patch",
+  "displayName": "E9Patch - Dynamic Binary Rewriting",
+  "description": "Live binary patching integration for e9patch with hot-reload support",
+  "version": "1.0.0",
+  "publisher": "e9patch",
+  "license": "GPL-3.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GJDuck/e9patch"
+  },
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Debuggers",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "binary",
+    "patching",
+    "rewriting",
+    "debugging",
+    "hot-reload",
+    "c",
+    "cpp"
+  ],
+  "activationEvents": [
+    "onLanguage:c",
+    "onLanguage:cpp",
+    "onCommand:e9patch.connect",
+    "onCommand:e9patch.disconnect"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "e9patch.connect",
+        "title": "E9Patch: Connect to Server"
+      },
+      {
+        "command": "e9patch.disconnect",
+        "title": "E9Patch: Disconnect"
+      },
+      {
+        "command": "e9patch.setBreakpoint",
+        "title": "E9Patch: Set Breakpoint at Cursor"
+      },
+      {
+        "command": "e9patch.clearBreakpoints",
+        "title": "E9Patch: Clear All Breakpoints"
+      },
+      {
+        "command": "e9patch.hotReload",
+        "title": "E9Patch: Force Hot Reload"
+      },
+      {
+        "command": "e9patch.showStatus",
+        "title": "E9Patch: Show Connection Status"
+      },
+      {
+        "command": "e9patch.openBrowser",
+        "title": "E9Patch: Open Browser Debugger"
+      }
+    ],
+    "configuration": {
+      "title": "E9Patch",
+      "properties": {
+        "e9patch.serverHost": {
+          "type": "string",
+          "default": "localhost",
+          "description": "E9Patch server hostname"
+        },
+        "e9patch.serverPort": {
+          "type": "number",
+          "default": 9229,
+          "description": "E9Patch server port"
+        },
+        "e9patch.autoConnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically connect when opening C/C++ files"
+        },
+        "e9patch.autoReload": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically trigger hot-reload on file save"
+        },
+        "e9patch.showNotifications": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show notifications for patch results"
+        },
+        "e9patch.browserUrl": {
+          "type": "string",
+          "default": "http://localhost:8080",
+          "description": "URL for the E9Patch browser debugger"
+        }
+      }
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "e9patch.setBreakpoint",
+          "when": "editorLangId == c || editorLangId == cpp",
+          "group": "e9patch"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "e9patch.hotReload",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "editorLangId == c || editorLangId == cpp"
+      },
+      {
+        "command": "e9patch.setBreakpoint",
+        "key": "ctrl+shift+b",
+        "mac": "cmd+shift+b",
+        "when": "editorLangId == c || editorLangId == cpp"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "lint": "eslint src --ext ts",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.74.0",
+    "@types/ws": "^8.5.0",
+    "@typescript-eslint/eslint-plugin": "^5.0.0",
+    "@typescript-eslint/parser": "^5.0.0",
+    "eslint": "^8.0.0",
+    "typescript": "^5.0.0",
+    "vsce": "^2.15.0"
+  },
+  "dependencies": {
+    "ws": "^8.14.0"
+  }
+}

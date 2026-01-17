@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>E9Patch Analysis</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      font-size: 12px;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .container {
+      display: flex;
+      height: 100%;
+    }
+
+    .sidebar {
+      width: 250px;
+      background: #252526;
+      border-right: 1px solid #3c3c3c;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .sidebar-header {
+      padding: 8px 12px;
+      background: #2d2d2d;
+      border-bottom: 1px solid #3c3c3c;
+      font-weight: bold;
+      color: #569cd6;
+    }
+
+    .sidebar-content {
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    .main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      padding: 8px;
+      background: #2d2d2d;
+      border-bottom: 1px solid #3c3c3c;
+    }
+
+    .toolbar button {
+      padding: 4px 12px;
+      background: #0e639c;
+      color: white;
+      border: none;
+      border-radius: 2px;
+      cursor: pointer;
+      font-size: 11px;
+    }
+
+    .toolbar button:hover {
+      background: #1177bb;
+    }
+
+    .toolbar button:disabled {
+      background: #4a4a4a;
+      cursor: not-allowed;
+    }
+
+    .toolbar input[type="text"] {
+      padding: 4px 8px;
+      background: #3c3c3c;
+      color: #d4d4d4;
+      border: 1px solid #555;
+      border-radius: 2px;
+      width: 200px;
+    }
+
+    .view-tabs {
+      display: flex;
+      background: #2d2d2d;
+      border-bottom: 1px solid #3c3c3c;
+    }
+
+    .view-tab {
+      padding: 8px 16px;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+    }
+
+    .view-tab:hover {
+      background: #323232;
+    }
+
+    .view-tab.active {
+      border-bottom-color: #569cd6;
+      background: #1e1e1e;
+    }
+
+    .view-content {
+      flex: 1;
+      overflow: auto;
+      padding: 12px;
+    }
+
+    /* Disassembly view */
+    .disasm-line {
+      display: flex;
+      padding: 2px 0;
+      line-height: 1.4;
+    }
+
+    .disasm-line:hover {
+      background: #2a2d2e;
+    }
+
+    .disasm-line.breakpoint {
+      background: #5c2d2d;
+    }
+
+    .disasm-addr {
+      color: #9cdcfe;
+      width: 140px;
+      flex-shrink: 0;
+    }
+
+    .disasm-bytes {
+      color: #6a9955;
+      width: 180px;
+      flex-shrink: 0;
+    }
+
+    .disasm-mnemonic {
+      color: #569cd6;
+      width: 80px;
+      flex-shrink: 0;
+    }
+
+    .disasm-operands {
+      color: #ce9178;
+    }
+
+    .disasm-comment {
+      color: #6a9955;
+      margin-left: 20px;
+    }
+
+    /* Function list */
+    .func-item {
+      padding: 4px 12px;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .func-item:hover {
+      background: #2a2d2e;
+    }
+
+    .func-item.selected {
+      background: #094771;
+    }
+
+    .func-name {
+      color: #dcdcaa;
+    }
+
+    .func-addr {
+      color: #808080;
+      font-size: 10px;
+    }
+
+    /* Decompiled view */
+    .decompiled {
+      white-space: pre;
+      line-height: 1.5;
+    }
+
+    .decompiled .keyword {
+      color: #569cd6;
+    }
+
+    .decompiled .type {
+      color: #4ec9b0;
+    }
+
+    .decompiled .function {
+      color: #dcdcaa;
+    }
+
+    .decompiled .string {
+      color: #ce9178;
+    }
+
+    .decompiled .number {
+      color: #b5cea8;
+    }
+
+    .decompiled .comment {
+      color: #6a9955;
+    }
+
+    /* Hex view */
+    .hex-line {
+      display: flex;
+      line-height: 1.4;
+    }
+
+    .hex-addr {
+      color: #9cdcfe;
+      width: 120px;
+      flex-shrink: 0;
+    }
+
+    .hex-bytes {
+      color: #d4d4d4;
+      width: 380px;
+      flex-shrink: 0;
+    }
+
+    .hex-ascii {
+      color: #6a9955;
+    }
+
+    /* Status bar */
+    .status-bar {
+      padding: 4px 12px;
+      background: #007acc;
+      color: white;
+      font-size: 11px;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    /* Modal */
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal.active {
+      display: flex;
+    }
+
+    .modal-content {
+      background: #2d2d2d;
+      border: 1px solid #3c3c3c;
+      padding: 20px;
+      min-width: 400px;
+      border-radius: 4px;
+    }
+
+    .modal-title {
+      font-size: 14px;
+      font-weight: bold;
+      margin-bottom: 16px;
+      color: #569cd6;
+    }
+
+    .modal-input {
+      width: 100%;
+      padding: 8px;
+      margin-bottom: 12px;
+      background: #3c3c3c;
+      border: 1px solid #555;
+      color: #d4d4d4;
+      border-radius: 2px;
+    }
+
+    .modal-buttons {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+
+    /* Loading indicator */
+    .loading {
+      display: none;
+      text-align: center;
+      padding: 40px;
+      color: #808080;
+    }
+
+    .loading.active {
+      display: block;
+    }
+
+    /* Source mapping indicator */
+    .source-link {
+      color: #569cd6;
+      cursor: pointer;
+      text-decoration: underline;
+    }
+
+    .source-link:hover {
+      color: #9cdcfe;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Sidebar: Function/Symbol list -->
+    <div class="sidebar">
+      <div class="sidebar-header">Functions</div>
+      <div class="sidebar-content" id="function-list">
+        <div class="loading active">No binary loaded</div>
+      </div>
+    </div>
+
+    <!-- Main content area -->
+    <div class="main-content">
+      <!-- Toolbar -->
+      <div class="toolbar">
+        <button id="btn-load">Load Binary</button>
+        <button id="btn-analyze">Analyze</button>
+        <input type="text" id="search-box" placeholder="Search symbol or address...">
+        <button id="btn-goto">Go to</button>
+        <button id="btn-export-symbols">Export Symbols</button>
+        <button id="btn-export-cfg">Export CFG</button>
+      </div>
+
+      <!-- View tabs -->
+      <div class="view-tabs">
+        <div class="view-tab active" data-view="disasm">Disassembly</div>
+        <div class="view-tab" data-view="decompile">Decompile</div>
+        <div class="view-tab" data-view="hex">Hex</div>
+        <div class="view-tab" data-view="source">Source Map</div>
+      </div>
+
+      <!-- View content -->
+      <div class="view-content" id="view-content">
+        <div class="loading active">Load a binary to begin analysis</div>
+      </div>
+
+      <!-- Status bar -->
+      <div class="status-bar">
+        <span id="status-left">Ready</span>
+        <span id="status-right">No binary loaded</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Load binary modal -->
+  <div class="modal" id="modal-load">
+    <div class="modal-content">
+      <div class="modal-title">Load Binary</div>
+      <input type="file" id="file-input" class="modal-input" accept=".elf,.exe,.bin,.so,.dll,.dylib,*">
+      <div class="modal-buttons">
+        <button id="btn-cancel-load">Cancel</button>
+        <button id="btn-confirm-load">Load</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Goto address modal -->
+  <div class="modal" id="modal-goto">
+    <div class="modal-content">
+      <div class="modal-title">Go to Address</div>
+      <input type="text" id="goto-input" class="modal-input" placeholder="0x401000 or function name">
+      <div class="modal-buttons">
+        <button id="btn-cancel-goto">Cancel</button>
+        <button id="btn-confirm-goto">Go</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="e9patch.js"></script>
+  <script src="panel.js"></script>
+</body>
+</html>

@@ -58,6 +58,11 @@ PAL_SRCS = \
 IDE_SRCS = \
     src/e9patch/ide/clion_bridge.cpp
 
+# Analysis engine sources (Ghidra-like capabilities)
+ANALYSIS_SRCS = \
+    src/e9patch/analysis/e9analysis.c \
+    src/e9patch/analysis/e9studio_analysis.c
+
 # e9patch core sources (existing)
 E9PATCH_CORE_SRCS = \
     src/e9patch/e9CFR.cpp \
@@ -178,7 +183,9 @@ $(BUILD_DIR)/e9patch-wasm3.com: $(E9PATCH_OBJS) | $(BUILD_DIR)
 # E9Studio sources (C for simpler Cosmopolitan build)
 E9STUDIO_SRCS = \
     src/e9patch/wasm/e9wasm_host.c \
-    src/e9patch/wasm/e9studio.c
+    src/e9patch/wasm/e9studio.c \
+    src/e9patch/analysis/e9analysis.c \
+    src/e9patch/analysis/e9studio_analysis.c
 
 E9STUDIO_OBJS = $(E9STUDIO_SRCS:.c=.cosmo.o)
 
@@ -295,6 +302,15 @@ help:
 	@echo "  - Terminal UI for interactive editing"
 	@echo "  - File watcher for hot-reload"
 	@echo "  - Self-modifying APE (save patches to own ZipOS)"
+	@echo ""
+	@echo "Analysis Engine (Ghidra-like capabilities):"
+	@echo "  - Multi-arch disassembly (x86-64, AArch64)"
+	@echo "  - Automatic symbol detection and injection"
+	@echo "  - Control Flow Graph (CFG) generation"
+	@echo "  - DWARF debug info parsing"
+	@echo "  - Decompilation to pseudo-C code"
+	@echo "  - Source-to-binary mapping"
+	@echo "  - Live patching from source changes"
 	@echo ""
 	@echo "Variables:"
 	@echo "  COSMO_PATH   - Path to Cosmopolitan (default: /opt/cosmo)"

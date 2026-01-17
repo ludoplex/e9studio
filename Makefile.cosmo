@@ -58,19 +58,26 @@ PAL_SRCS = \
 IDE_SRCS = \
     src/e9patch/ide/clion_bridge.cpp
 
-# Analysis engine sources (Ghidra-like + binwalk/polyfile/polytracker-inspired)
+# Analysis engine sources (wraps external tools: binwalk, polyfile, capstone, etc.)
 ANALYSIS_SRCS = \
     src/e9patch/analysis/e9analysis.c \
     src/e9patch/analysis/e9studio_analysis.c \
-    src/e9patch/analysis/e9polyglot.c
+    src/e9patch/analysis/e9polyglot.c \
+    src/e9patch/analysis/e9extern.c
 
-# Analysis headers (for reference):
-# - e9analysis.h      : Core binary analysis (disasm, CFG, decompile)
-# - e9polyglot.h      : Polyglot/schizophrenic file detection (polyfile)
-# - e9compress.h      : Compression/encryption detection
-# - e9obfuscate.h     : Obfuscation detection/removal
-# - e9taint.h         : Taint tracking/parser identification (polytracker)
-# - e9forensics.h     : Unified forensics and deep analysis
+# External tool integration:
+# - binwalk   : pip install binwalk (signature scanning, extraction)
+# - polyfile  : pip install polyfile (polyglot detection)
+# - capstone  : apt install libcapstone-dev (disassembly)
+# - keystone  : (assembly)
+# - zlib/lzma/zstd : compression libraries
+#
+# Optional compile flags:
+# -DHAVE_CAPSTONE -lcapstone
+# -DHAVE_KEYSTONE -lkeystone
+# -DHAVE_ZLIB -lz
+# -DHAVE_LZMA -llzma
+# -DHAVE_ZSTD -lzstd
 
 # e9patch core sources (existing)
 E9PATCH_CORE_SRCS = \

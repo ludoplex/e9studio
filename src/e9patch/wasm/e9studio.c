@@ -418,10 +418,19 @@ static int run_self_tests(void) {
     uint8_t *buf = e9wasm_get_shared_buffer(&buf_size);
     TEST("Shared buffer allocation", buf != NULL && buf_size > 0);
 
-    /* Test ZipOS access */
-    int fd = open("/zip/", O_RDONLY);
-    TEST("ZipOS directory access", fd >= 0 || errno == ENOTDIR);
-    if (fd >= 0) close(fd);
+    /* Test ZipOS access (embedded ZIP in executable) */
+    int zipos_ok = e9wasm_zipos_available();
+    TEST("Embedded ZipOS available", zipos_ok);
+
+    /* Try reading a file from embedded ZIP */
+    if (zipos_ok) {
+        size_t size;
+        uint8_t *data = e9wasm_zipos_read(".cosmo/VERSION", &size);
+        TEST("ZipOS file read", data != NULL && size > 0);
+        if (data) free(data);
+    } else {
+        TEST("ZipOS file read (skipped)", true);
+    }
 
     /* Test mmap */
     void *mem = mmap(NULL, 4096, PROT_READ | PROT_WRITE,

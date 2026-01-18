@@ -136,6 +136,24 @@ int e9wasm_zipos_list(E9WasmZipCallback callback, void *userdata);
  */
 const char *e9wasm_get_exe_path(void);
 
+/*
+ * Embedded ZipOS support (works without Cosmopolitan)
+ * Reads ZIP content appended to the executable
+ */
+
+/*
+ * Check if embedded ZipOS is available
+ * Returns 1 if available, 0 otherwise
+ */
+int e9wasm_zipos_available(void);
+
+/*
+ * Read file from embedded ZipOS
+ * Returns allocated buffer (caller must free) or NULL on error
+ * Sets *out_size to file size
+ */
+uint8_t *e9wasm_zipos_read(const char *name, size_t *out_size);
+
 #ifdef __cplusplus
 }
 #endif

@@ -725,6 +725,157 @@ const char *e9wasm_get_exe_path(void) {
 }
 
 /*
+ * Embedded ZipOS support
+ * Reads ZIP content appended to the end of the executable
+ */
+
+/* ZIP file signatures */
+#define ZIP_EOCD_SIGNATURE  0x06054b50  /* End of Central Directory */
+#define ZIP_CD_SIGNATURE    0x02014b50  /* Central Directory entry */
+#define ZIP_LOCAL_SIGNATURE 0x04034b50  /* Local file header */
+
+/* Find the embedded ZIP in the executable */
+static uint8_t *find_embedded_zip(size_t *zip_size) {
+    const char *exe = e9wasm_get_exe_path();
+    if (!exe || !exe[0]) return NULL;
+
+    int fd = open(exe, O_RDONLY);
+    if (fd < 0) return NULL;
+
+    struct stat st;
+    if (fstat(fd, &st) < 0) {
+        close(fd);
+        return NULL;
+    }
+
+    /* Memory map the executable */
+    uint8_t *data = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+
+    if (data == MAP_FAILED) return NULL;
+
+    /* Search backwards for EOCD signature */
+    /* EOCD is at least 22 bytes, max comment is 65535 */
+    size_t search_start = st.st_size > 65557 ? st.st_size - 65557 : 0;
+
+    for (size_t i = st.st_size - 22; i >= search_start; i--) {
+        uint32_t sig;
+        memcpy(&sig, data + i, 4);
+        if (sig == ZIP_EOCD_SIGNATURE) {
+            /* Found EOCD - get central directory offset */
+            uint32_t cd_offset;  /* Central directory offset (within ZIP) */
+            uint32_t cd_size;    /* Central directory size */
+            memcpy(&cd_size, data + i + 12, 4);
+            memcpy(&cd_offset, data + i + 16, 4);
+
+            /* ZIP end is at EOCD + 22 bytes (minimum EOCD size) */
+            size_t eocd_pos = i;
+
+            /* For an appended ZIP, cd_offset is relative to ZIP start.
+             * The EOCD position minus cd_size minus cd_offset gives us where
+             * the ZIP should start. But cd_offset is from ZIP start, so:
+             * zip_start + cd_offset = eocd_pos - cd_size
+             * Therefore: zip_start = eocd_pos - cd_size - cd_offset
+             */
+            if (eocd_pos >= cd_size + cd_offset) {
+                size_t zip_start = eocd_pos - cd_size - cd_offset;
+
+                /* Verify this looks like a valid ZIP start */
+                uint32_t local_sig;
+                memcpy(&local_sig, data + zip_start, 4);
+                if (local_sig == ZIP_LOCAL_SIGNATURE) {
+                    /* Calculate total ZIP size */
+                    *zip_size = eocd_pos + 22 - zip_start;
+                    uint8_t *zip_copy = malloc(*zip_size);
+                    if (zip_copy) {
+                        memcpy(zip_copy, data + zip_start, *zip_size);
+                    }
+                    munmap(data, st.st_size);
+                    return zip_copy;
+                }
+            }
+            break;
+        }
+    }
+
+    munmap(data, st.st_size);
+    return NULL;
+}
+
+/* Cached embedded ZIP */
+static uint8_t *g_embedded_zip = NULL;
+static size_t g_embedded_zip_size = 0;
+
+static void ensure_embedded_zip(void) {
+    if (!g_embedded_zip) {
+        g_embedded_zip = find_embedded_zip(&g_embedded_zip_size);
+    }
+}
+
+int e9wasm_zipos_available(void) {
+    ensure_embedded_zip();
+    return g_embedded_zip != NULL ? 1 : 0;
+}
+
+/* Read file from embedded ZIP */
+uint8_t *e9wasm_zipos_read(const char *name, size_t *out_size) {
+    ensure_embedded_zip();
+    if (!g_embedded_zip) return NULL;
+
+    /* Skip leading slash or ./ */
+    const char *orig_name = name;
+    while (*name == '/' || (*name == '.' && *(name+1) == '/')) {
+        name++;
+        if (*(name-1) == '.') name++;
+    }
+
+    size_t search_len = strlen(name);
+
+    /* Parse local file headers */
+    size_t offset = 0;
+    while (offset + 30 < g_embedded_zip_size) {
+        uint32_t sig;
+        memcpy(&sig, g_embedded_zip + offset, 4);
+
+        if (sig != ZIP_LOCAL_SIGNATURE) break;
+
+        uint16_t name_len, extra_len;
+        uint32_t comp_size, uncomp_size;
+
+        memcpy(&comp_size, g_embedded_zip + offset + 18, 4);
+        memcpy(&uncomp_size, g_embedded_zip + offset + 22, 4);
+        memcpy(&name_len, g_embedded_zip + offset + 26, 2);
+        memcpy(&extra_len, g_embedded_zip + offset + 28, 2);
+
+        if (offset + 30 + name_len > g_embedded_zip_size) break;
+
+        /* Compare filename */
+        char *entry_name = (char *)(g_embedded_zip + offset + 30);
+
+        if (name_len == search_len && memcmp(entry_name, name, name_len) == 0) {
+            /* Found it! */
+            size_t data_offset = offset + 30 + name_len + extra_len;
+            if (data_offset + uncomp_size > g_embedded_zip_size) return NULL;
+
+            uint8_t *result = malloc(uncomp_size + 1);
+            if (!result) return NULL;
+
+            memcpy(result, g_embedded_zip + data_offset, uncomp_size);
+            result[uncomp_size] = '\0';  /* Null-terminate for convenience */
+
+            if (out_size) *out_size = uncomp_size;
+            return result;
+        }
+
+        /* Move to next entry */
+        offset += 30 + name_len + extra_len + comp_size;
+    }
+
+    (void)orig_name;  /* Suppress unused warning */
+    return NULL;
+}
+
+/*
  * TUI implementation (minimal terminal UI)
  */
 static bool g_tui_initialized = false;

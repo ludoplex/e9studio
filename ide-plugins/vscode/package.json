@@ -1,0 +1,154 @@
+{
+    "name": "e9studio-vscode",
+    "displayName": "E9Studio Binary Editor",
+    "description": "Binary analysis and patching with E9Studio",
+    "version": "1.0.0",
+    "publisher": "e9patch",
+    "license": "GPL-3.0-or-later",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/e9patch/e9studio"
+    },
+    "engines": {
+        "vscode": "^1.74.0"
+    },
+    "categories": [
+        "Debuggers",
+        "Programming Languages",
+        "Other"
+    ],
+    "keywords": [
+        "binary",
+        "reverse engineering",
+        "disassembly",
+        "decompilation",
+        "patching",
+        "elf",
+        "pe",
+        "macho"
+    ],
+    "activationEvents": [
+        "onCommand:e9studio.openBinary",
+        "workspaceContains:**/*.elf",
+        "workspaceContains:**/*.exe",
+        "workspaceContains:**/*.com"
+    ],
+    "main": "./out/extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "e9studio.openBinary",
+                "title": "E9Studio: Open Binary"
+            },
+            {
+                "command": "e9studio.showDisassembly",
+                "title": "E9Studio: Show Disassembly"
+            },
+            {
+                "command": "e9studio.showDecompilation",
+                "title": "E9Studio: Show Decompilation"
+            },
+            {
+                "command": "e9studio.gotoAddress",
+                "title": "E9Studio: Go to Address"
+            },
+            {
+                "command": "e9studio.patchNop",
+                "title": "E9Studio: NOP Selection"
+            },
+            {
+                "command": "e9studio.applyPatches",
+                "title": "E9Studio: Apply Patches"
+            },
+            {
+                "command": "e9studio.saveBinary",
+                "title": "E9Studio: Save Patched Binary"
+            },
+            {
+                "command": "e9studio.showFunctions",
+                "title": "E9Studio: Show Functions"
+            },
+            {
+                "command": "e9studio.showStrings",
+                "title": "E9Studio: Show Strings"
+            }
+        ],
+        "menus": {
+            "editor/context": [
+                {
+                    "command": "e9studio.patchNop",
+                    "when": "e9studio.binaryOpen",
+                    "group": "e9studio"
+                }
+            ]
+        },
+        "configuration": {
+            "title": "E9Studio",
+            "properties": {
+                "e9studio.executablePath": {
+                    "type": "string",
+                    "default": "e9studio.com",
+                    "description": "Path to e9studio.com executable"
+                },
+                "e9studio.defaultArch": {
+                    "type": "string",
+                    "enum": ["auto", "x86-64", "aarch64"],
+                    "default": "auto",
+                    "description": "Default architecture for analysis"
+                },
+                "e9studio.showAddresses": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show addresses in disassembly"
+                },
+                "e9studio.showBytes": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Show raw bytes in disassembly"
+                }
+            }
+        },
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "e9studio",
+                    "title": "E9Studio",
+                    "icon": "resources/icon.svg"
+                }
+            ]
+        },
+        "views": {
+            "e9studio": [
+                {
+                    "id": "e9studio.functions",
+                    "name": "Functions"
+                },
+                {
+                    "id": "e9studio.symbols",
+                    "name": "Symbols"
+                },
+                {
+                    "id": "e9studio.patches",
+                    "name": "Patches"
+                }
+            ]
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "lint": "eslint src --ext ts"
+    },
+    "devDependencies": {
+        "@types/node": "^18.0.0",
+        "@types/vscode": "^1.74.0",
+        "@typescript-eslint/eslint-plugin": "^5.0.0",
+        "@typescript-eslint/parser": "^5.0.0",
+        "eslint": "^8.0.0",
+        "typescript": "^4.9.0"
+    },
+    "dependencies": {
+        "vscode-jsonrpc": "^8.0.0"
+    }
+}

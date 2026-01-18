@@ -32,6 +32,7 @@ CFLAGS += -I src/e9patch
 CFLAGS += -I src/e9patch/vendor
 CFLAGS += -I src/e9patch/wasm
 CFLAGS += -I src/e9patch/analysis
+CFLAGS += -I src/e9patch/ide
 # WAMR headers
 CFLAGS += -I src/e9patch/vendor/wamr
 CFLAGS += -I src/e9patch/vendor/wamr/core/iwasm/include
@@ -63,13 +64,17 @@ WAMR_SRCS = \
     src/e9patch/vendor/wamr/core/iwasm/common/wasm_runtime_common.c \
     src/e9patch/vendor/wamr/core/shared/platform/cosmopolitan/platform_init.c
 
+# IDE integration protocol
+IDE_SRCS = \
+    src/e9patch/ide/e9ide_protocol.c
+
 # E9Studio main sources
 E9STUDIO_SRCS = \
     src/e9patch/wasm/e9wasm_host.c \
     src/e9patch/wasm/e9studio.c
 
 # All sources
-ALL_SRCS = $(VENDOR_SRCS) $(ANALYSIS_SRCS) $(WAMR_SRCS) $(E9STUDIO_SRCS)
+ALL_SRCS = $(VENDOR_SRCS) $(ANALYSIS_SRCS) $(WAMR_SRCS) $(IDE_SRCS) $(E9STUDIO_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)
 
 # Output
@@ -91,10 +96,11 @@ vendor: $(BUILD_DIR)/libe9vendor.a
 VENDOR_OBJS = $(VENDOR_SRCS:.c=.o)
 ANALYSIS_OBJS = $(ANALYSIS_SRCS:.c=.o)
 WAMR_OBJS = $(WAMR_SRCS:.c=.o)
+IDE_OBJS = $(IDE_SRCS:.c=.o)
 
-$(BUILD_DIR)/libe9vendor.a: $(VENDOR_OBJS) $(ANALYSIS_OBJS) $(WAMR_OBJS) | $(BUILD_DIR)
+$(BUILD_DIR)/libe9vendor.a: $(VENDOR_OBJS) $(ANALYSIS_OBJS) $(WAMR_OBJS) $(IDE_OBJS) | $(BUILD_DIR)
 	$(AR) rcs $@ $^
-	@echo "Built vendor library with WAMR and analysis: $@"
+	@echo "Built vendor library with WAMR, analysis, and IDE: $@"
 
 # Compile object files
 %.o: %.c
@@ -148,6 +154,7 @@ clean:
 	rm -f src/e9patch/vendor/wamr/core/iwasm/common/*.o
 	rm -f src/e9patch/vendor/wamr/core/shared/platform/cosmopolitan/*.o
 	rm -f src/e9patch/analysis/*.o
+	rm -f src/e9patch/ide/*.o
 
 #########################################################################
 # Development

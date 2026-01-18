@@ -50,6 +50,12 @@ VENDOR_SRCS = \
     src/e9patch/vendor/e9disasm_arm64.c \
     src/e9patch/vendor/e9vendor.c
 
+# Analysis engine sources (CFG, symbol injection, decompilation)
+ANALYSIS_SRCS = \
+    src/e9patch/analysis/e9analysis.c \
+    src/e9patch/analysis/e9func_sigs.c \
+    src/e9patch/analysis/e9studio_analysis.c
+
 # WAMR sources (WebAssembly Micro Runtime with Fast JIT)
 WAMR_SRCS = \
     src/e9patch/vendor/wamr/core/iwasm/common/wasm_runtime_common.c \
@@ -61,7 +67,7 @@ E9STUDIO_SRCS = \
     src/e9patch/wasm/e9studio.c
 
 # All sources
-ALL_SRCS = $(VENDOR_SRCS) $(WAMR_SRCS) $(E9STUDIO_SRCS)
+ALL_SRCS = $(VENDOR_SRCS) $(ANALYSIS_SRCS) $(WAMR_SRCS) $(E9STUDIO_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)
 
 # Output
@@ -81,11 +87,12 @@ $(BUILD_DIR):
 vendor: $(BUILD_DIR)/libe9vendor.a
 
 VENDOR_OBJS = $(VENDOR_SRCS:.c=.o)
+ANALYSIS_OBJS = $(ANALYSIS_SRCS:.c=.o)
 WAMR_OBJS = $(WAMR_SRCS:.c=.o)
 
-$(BUILD_DIR)/libe9vendor.a: $(VENDOR_OBJS) $(WAMR_OBJS) | $(BUILD_DIR)
+$(BUILD_DIR)/libe9vendor.a: $(VENDOR_OBJS) $(ANALYSIS_OBJS) $(WAMR_OBJS) | $(BUILD_DIR)
 	$(AR) rcs $@ $^
-	@echo "Built vendor library with WAMR: $@"
+	@echo "Built vendor library with WAMR and analysis: $@"
 
 # Compile object files
 %.o: %.c
@@ -138,6 +145,7 @@ clean:
 	rm -f src/e9patch/vendor/test_vendor
 	rm -f src/e9patch/vendor/wamr/core/iwasm/common/*.o
 	rm -f src/e9patch/vendor/wamr/core/shared/platform/cosmopolitan/*.o
+	rm -f src/e9patch/analysis/*.o
 
 #########################################################################
 # Development

@@ -326,7 +326,7 @@ static int detect_elf(E9Binary *bin)
             const char *strtab = (const char *)(data + strtab_off);
 
             /* Count sections and look for debug info */
-            bin->sections = (typeof(bin->sections))e9_alloc(shnum * sizeof(*bin->sections));
+            bin->sections = e9_alloc(shnum * sizeof(*bin->sections));
             bin->num_sections = 0;
 
             for (uint16_t i = 0; i < shnum; i++) {

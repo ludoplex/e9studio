@@ -2,8 +2,14 @@
  * e9wasm_host.c
  * Embedded WASM VM Host Implementation
  *
- * Uses wasm3 interpreter with direct ZipOS integration.
- * Provides host functions for binary manipulation.
+ * Uses WAMR (WebAssembly Micro Runtime) with Fast JIT for high-performance
+ * WASM execution. Replaces Chrome/browser as the WASM runtime.
+ *
+ * Features:
+ * - Fast JIT compilation (no LLVM dependency)
+ * - Direct ZipOS integration for embedded files
+ * - Shared memory buffer for binary data exchange
+ * - Native function registration for host callbacks
  *
  * Copyright (C) 2024 E9Patch Contributors
  * License: GPLv3+
@@ -13,6 +19,9 @@
 #include "e9studio_config.h"
 
 #include "e9wasm_host.h"
+
+/* WAMR headers */
+#include "wasm_export.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,18 +34,17 @@
 #include <sys/stat.h>
 
 #ifdef __COSMOPOLITAN__
-#include "libc/runtime/runtime.h"
-#include "libc/calls/calls.h"
-#include "libc/sysv/consts/map.h"
-#include "libc/sysv/consts/prot.h"
-#include "libc/sysv/consts/o.h"
+#include <cosmo.h>
 #endif
 
-/* wasm3 headers - from Cosmopolitan third_party or standalone */
-#ifdef E9_WASM3_ENABLED
-#include "wasm3.h"
-#include "m3_env.h"
-#endif
+/*
+ * Execution mode enumeration
+ */
+typedef enum {
+    E9_WASM_MODE_INTERP = 0,     /* Fast interpreter */
+    E9_WASM_MODE_FAST_JIT = 1,   /* Fast JIT (default) */
+    E9_WASM_MODE_AOT = 2         /* Ahead-of-time compiled */
+} E9WasmExecMode;
 
 /*
  * Runtime state
@@ -44,11 +52,10 @@
 static struct {
     bool initialized;
 
-#ifdef E9_WASM3_ENABLED
-    IM3Environment env;
-    IM3Runtime runtime;
-    IM3Module module;
-#endif
+    /* WAMR state */
+    wasm_module_t module;
+    wasm_module_inst_t module_inst;
+    wasm_exec_env_t exec_env;
 
     /* Shared buffer for binary data exchange */
     uint8_t *shared_buffer;
@@ -69,14 +76,16 @@ static struct {
     /* Configuration */
     E9WasmConfig config;
 
+    /* Execution mode */
+    E9WasmExecMode exec_mode;
+
 } g_runtime = {0};
 
 /*
  * Logging
  */
-static void wasm_log(const char *fmt, ...) {
-    if (!g_runtime.config.enable_debug) return;
-
+static void wasm_log(const char *fmt, ...)
+{
     va_list args;
     va_start(args, fmt);
     fprintf(stderr, "[e9wasm] ");
@@ -85,137 +94,523 @@ static void wasm_log(const char *fmt, ...) {
     va_end(args);
 }
 
-#ifdef E9_WASM3_ENABLED
+/*
+ * ============================================================================
+ * Native host functions (callable from WASM)
+ * ============================================================================
+ */
 
 /*
- * Host function: log message from WASM
+ * Native function: read from ZipOS
+ * Signature: (i32 name_ptr, i32 name_len, i32 out_buf, i32 buf_size) -> i32
  */
-static m3ApiRawFunction(host_log) {
-    m3ApiGetArgMem(const char *, msg);
-    m3ApiGetArg(uint32_t, len);
+static int32_t native_zipos_read(wasm_exec_env_t exec_env,
+                                  int32_t name_ptr, int32_t name_len,
+                                  int32_t out_buf, int32_t buf_size)
+{
+    wasm_module_inst_t inst = wasm_runtime_get_module_inst(exec_env);
 
-    char buf[1024];
-    size_t copy_len = len < sizeof(buf) - 1 ? len : sizeof(buf) - 1;
-    memcpy(buf, msg, copy_len);
-    buf[copy_len] = '\0';
-
-    fprintf(stderr, "[wasm] %s\n", buf);
-
-    m3ApiSuccess();
-}
-
-/*
- * Host function: get shared buffer pointer (as WASM linear memory offset)
- */
-static m3ApiRawFunction(host_get_shared_buffer) {
-    m3ApiReturnType(uint32_t);
-
-    /* Return offset in WASM linear memory where shared buffer starts */
-    /* For wasm3, we need to place the shared buffer within WASM memory */
-    /* This is a simplified approach - real impl would use proper memory management */
-
-    uint32_t offset = 1024 * 1024;  /* 1MB offset */
-    m3ApiReturn(offset);
-}
-
-/*
- * Host function: get shared buffer size
- */
-static m3ApiRawFunction(host_get_shared_buffer_size) {
-    m3ApiReturnType(uint32_t);
-    m3ApiReturn((uint32_t)g_runtime.shared_buffer_size);
-}
-
-/*
- * Host function: load binary from ZipOS into shared buffer
- */
-static m3ApiRawFunction(host_load_binary) {
-    m3ApiReturnType(uint32_t);
-    m3ApiGetArgMem(const char *, path);
-    m3ApiGetArg(uint32_t, path_len);
-
-    /* Construct full ZipOS path */
-    char full_path[512];
-    if (path_len > sizeof(full_path) - 10) {
-        m3ApiReturn(0);
+    /* Validate pointers */
+    if (!wasm_runtime_validate_app_addr(inst, name_ptr, name_len) ||
+        !wasm_runtime_validate_app_addr(inst, out_buf, buf_size)) {
+        wasm_log("Invalid memory access in zipos_read");
+        return -1;
     }
 
-    /* If path doesn't start with /zip/, prepend it */
-    if (path_len >= 5 && memcmp(path, "/zip/", 5) == 0) {
-        memcpy(full_path, path, path_len);
-        full_path[path_len] = '\0';
+    char *name = wasm_runtime_addr_app_to_native(inst, name_ptr);
+    uint8_t *buf = wasm_runtime_addr_app_to_native(inst, out_buf);
+
+    /* Construct path with null terminator */
+    char path[512];
+    if (name_len >= (int32_t)sizeof(path)) {
+        return -1;
+    }
+    memcpy(path, name, name_len);
+    path[name_len] = '\0';
+
+    /* Read from ZipOS */
+    size_t size;
+    uint8_t *data = e9wasm_zipos_read(path, &size);
+    if (!data) {
+        return -1;
+    }
+
+    if (size > (size_t)buf_size) {
+        free(data);
+        return -1;
+    }
+
+    memcpy(buf, data, size);
+    free(data);
+    return (int32_t)size;
+}
+
+/*
+ * Native function: apply patch to shared buffer
+ * Signature: (i32 offset, i32 data_ptr, i32 size) -> i32
+ */
+static int32_t native_apply_patch(wasm_exec_env_t exec_env,
+                                   int32_t offset, int32_t data_ptr, int32_t size)
+{
+    wasm_module_inst_t inst = wasm_runtime_get_module_inst(exec_env);
+
+    if (!wasm_runtime_validate_app_addr(inst, data_ptr, size)) {
+        wasm_log("Invalid memory access in apply_patch");
+        return -1;
+    }
+
+    uint8_t *data = wasm_runtime_addr_app_to_native(inst, data_ptr);
+
+    /* Apply to shared buffer */
+    if (!g_runtime.shared_buffer ||
+        offset < 0 ||
+        (size_t)(offset + size) > g_runtime.shared_buffer_size) {
+        wasm_log("Patch out of bounds: offset=%d, size=%d, buffer=%zu",
+                 offset, size, g_runtime.shared_buffer_size);
+        return -1;
+    }
+
+    memcpy(g_runtime.shared_buffer + offset, data, size);
+    wasm_log("Applied %d byte patch at offset %d", size, offset);
+    return 0;
+}
+
+/*
+ * Native function: get shared buffer info
+ * Signature: (i32 info_ptr) -> i32
+ * Writes: { uint32_t offset_in_wasm_memory, uint32_t size }
+ */
+static int32_t native_get_shared_buffer_info(wasm_exec_env_t exec_env,
+                                               int32_t info_ptr)
+{
+    wasm_module_inst_t inst = wasm_runtime_get_module_inst(exec_env);
+
+    if (!wasm_runtime_validate_app_addr(inst, info_ptr, 8)) {
+        return -1;
+    }
+
+    uint32_t *info = wasm_runtime_addr_app_to_native(inst, info_ptr);
+
+    /* The shared buffer is at offset 0 in our implementation */
+    /* In a real impl, we'd map it into WASM linear memory properly */
+    info[0] = 0;  /* offset */
+    info[1] = (uint32_t)g_runtime.shared_buffer_size;
+
+    return 0;
+}
+
+/*
+ * Native function: log message
+ * Signature: (i32 msg_ptr, i32 msg_len) -> void
+ */
+static void native_log(wasm_exec_env_t exec_env,
+                       int32_t msg_ptr, int32_t msg_len)
+{
+    wasm_module_inst_t inst = wasm_runtime_get_module_inst(exec_env);
+
+    if (!wasm_runtime_validate_app_addr(inst, msg_ptr, msg_len)) {
+        return;
+    }
+
+    char *msg = wasm_runtime_addr_app_to_native(inst, msg_ptr);
+
+    /* Print with length limit */
+    fprintf(stderr, "[wasm] %.*s\n", msg_len, msg);
+}
+
+/*
+ * Native function: flush icache
+ * Signature: (i32 addr, i32 size) -> void
+ */
+static void native_flush_icache(wasm_exec_env_t exec_env,
+                                 int32_t addr, int32_t size)
+{
+    (void)exec_env;
+
+    if (g_runtime.shared_buffer && addr >= 0 &&
+        (size_t)(addr + size) <= g_runtime.shared_buffer_size) {
+        e9wasm_flush_icache(g_runtime.shared_buffer + addr, size);
+    }
+}
+
+/*
+ * Native symbol registration table
+ */
+static NativeSymbol g_native_symbols[] = {
+    { "zipos_read", native_zipos_read, "(iiii)i", NULL },
+    { "apply_patch", native_apply_patch, "(iii)i", NULL },
+    { "get_shared_buffer_info", native_get_shared_buffer_info, "(i)i", NULL },
+    { "log", native_log, "(ii)", NULL },
+    { "flush_icache", native_flush_icache, "(ii)", NULL },
+};
+
+/*
+ * ============================================================================
+ * Runtime initialization
+ * ============================================================================
+ */
+
+/*
+ * Set execution mode (call before e9wasm_init)
+ */
+void e9wasm_set_exec_mode(int mode)
+{
+    switch (mode) {
+        case 0: g_runtime.exec_mode = E9_WASM_MODE_INTERP; break;
+        case 1: g_runtime.exec_mode = E9_WASM_MODE_FAST_JIT; break;
+        case 2: g_runtime.exec_mode = E9_WASM_MODE_AOT; break;
+        default: g_runtime.exec_mode = E9_WASM_MODE_FAST_JIT; break;
+    }
+}
+
+int e9wasm_init(const E9WasmConfig *config)
+{
+    if (g_runtime.initialized) {
+        wasm_log("Already initialized");
+        return 0;
+    }
+
+    wasm_log("Initializing WAMR runtime");
+
+    /* Save configuration */
+    if (config) {
+        g_runtime.config = *config;
     } else {
-        snprintf(full_path, sizeof(full_path), "/zip/%.*s", path_len, path);
+        g_runtime.config.stack_size = 128 * 1024;
+        g_runtime.config.heap_size = 16 * 1024 * 1024;
+        g_runtime.config.shared_buffer_size = 64 * 1024 * 1024;
+        g_runtime.config.enable_wasi = true;
+        g_runtime.config.enable_debug = false;
+    }
+
+    /* Configure WAMR initialization */
+    RuntimeInitArgs init_args;
+    memset(&init_args, 0, sizeof(init_args));
+    init_args.mem_alloc_type = Alloc_With_System_Allocator;
+
+    /* Select running mode */
+    switch (g_runtime.exec_mode) {
+        case E9_WASM_MODE_FAST_JIT:
+            wasm_log("Execution mode: Fast JIT");
+            init_args.running_mode = Mode_Fast_JIT;
+            break;
+        case E9_WASM_MODE_AOT:
+            wasm_log("Execution mode: AOT");
+            init_args.running_mode = Mode_LLVM_AOT;
+            break;
+        case E9_WASM_MODE_INTERP:
+        default:
+            wasm_log("Execution mode: Fast Interpreter");
+            init_args.running_mode = Mode_Fast_Interp;
+            break;
+    }
+
+    /* Initialize WAMR */
+    if (!wasm_runtime_full_init(&init_args)) {
+        wasm_log("Failed to initialize WAMR");
+        return -1;
+    }
+
+    /* Register native functions */
+    if (!wasm_runtime_register_natives("env",
+                                        g_native_symbols,
+                                        sizeof(g_native_symbols) / sizeof(NativeSymbol))) {
+        wasm_log("Failed to register native symbols");
+        wasm_runtime_destroy();
+        return -1;
+    }
+
+    /* Allocate shared buffer */
+    size_t buf_size = g_runtime.config.shared_buffer_size;
+    g_runtime.shared_buffer = mmap(NULL, buf_size,
+                                    PROT_READ | PROT_WRITE,
+                                    MAP_PRIVATE | MAP_ANONYMOUS,
+                                    -1, 0);
+    if (g_runtime.shared_buffer == MAP_FAILED) {
+        wasm_log("Failed to allocate shared buffer: %s", strerror(errno));
+        wasm_runtime_destroy();
+        return -1;
+    }
+    g_runtime.shared_buffer_size = buf_size;
+
+    /* Get executable path */
+#ifdef __COSMOPOLITAN__
+    const char *exe = GetProgramExecutableName();
+    if (exe) {
+        E9_STRCPY_SAFE(g_runtime.exe_path, sizeof(g_runtime.exe_path), exe);
+    }
+#else
+    ssize_t len = readlink("/proc/self/exe", g_runtime.exe_path,
+                           sizeof(g_runtime.exe_path) - 1);
+    if (len > 0) {
+        g_runtime.exe_path[len] = '\0';
+    }
+#endif
+
+    g_runtime.initialized = true;
+    wasm_log("WAMR initialized, shared buffer: %zu MB",
+             buf_size / (1024 * 1024));
+
+    return 0;
+}
+
+void e9wasm_shutdown(void)
+{
+    if (!g_runtime.initialized)
+        return;
+
+    wasm_log("Shutting down WAMR");
+
+    if (g_runtime.exec_env) {
+        wasm_runtime_destroy_exec_env(g_runtime.exec_env);
+        g_runtime.exec_env = NULL;
+    }
+
+    if (g_runtime.module_inst) {
+        wasm_runtime_deinstantiate(g_runtime.module_inst);
+        g_runtime.module_inst = NULL;
+    }
+
+    if (g_runtime.module) {
+        wasm_runtime_unload(g_runtime.module);
+        g_runtime.module = NULL;
+    }
+
+    wasm_runtime_destroy();
+
+    if (g_runtime.shared_buffer && g_runtime.shared_buffer != MAP_FAILED) {
+        munmap(g_runtime.shared_buffer, g_runtime.shared_buffer_size);
+        g_runtime.shared_buffer = NULL;
+    }
+
+    if (g_runtime.mapped_binary) {
+        munmap(g_runtime.mapped_binary, g_runtime.mapped_size);
+        if (g_runtime.mapped_fd >= 0)
+            close(g_runtime.mapped_fd);
+        g_runtime.mapped_binary = NULL;
+    }
+
+    g_runtime.initialized = false;
+    wasm_log("WAMR shutdown complete");
+}
+
+/*
+ * ============================================================================
+ * Module loading
+ * ============================================================================
+ */
+
+void *e9wasm_load_module(const char *path)
+{
+    if (!g_runtime.initialized) {
+        wasm_log("Runtime not initialized");
+        return NULL;
+    }
+
+    wasm_log("Loading module: %s", path);
+
+    /* Read WASM bytes */
+    uint8_t *wasm_bytes = NULL;
+    size_t size = 0;
+
+    /* Try ZipOS first */
+    wasm_bytes = e9wasm_zipos_read(path, &size);
+
+    if (!wasm_bytes) {
+        /* Try filesystem */
+        int fd = open(path, O_RDONLY);
+        if (fd < 0) {
+            wasm_log("Cannot open module: %s", strerror(errno));
+            return NULL;
+        }
+
+        struct stat st;
+        fstat(fd, &st);
+        size = st.st_size;
+
+        wasm_bytes = malloc(size);
+        if (!wasm_bytes) {
+            close(fd);
+            return NULL;
+        }
+
+        if (read(fd, wasm_bytes, size) != (ssize_t)size) {
+            close(fd);
+            free(wasm_bytes);
+            return NULL;
+        }
+        close(fd);
+    }
+
+    /* Load module */
+    char error_buf[256];
+    g_runtime.module = wasm_runtime_load(wasm_bytes, size,
+                                          error_buf, sizeof(error_buf));
+    free(wasm_bytes);
+
+    if (!g_runtime.module) {
+        wasm_log("Failed to load module: %s", error_buf);
+        return NULL;
+    }
+
+    /* Instantiate module */
+    uint32_t stack_size = g_runtime.config.stack_size;
+    uint32_t heap_size = g_runtime.config.heap_size;
+
+    g_runtime.module_inst = wasm_runtime_instantiate(
+        g_runtime.module, stack_size, heap_size, error_buf, sizeof(error_buf));
+
+    if (!g_runtime.module_inst) {
+        wasm_log("Failed to instantiate module: %s", error_buf);
+        wasm_runtime_unload(g_runtime.module);
+        g_runtime.module = NULL;
+        return NULL;
+    }
+
+    /* Create execution environment */
+    g_runtime.exec_env = wasm_runtime_create_exec_env(
+        g_runtime.module_inst, stack_size);
+
+    if (!g_runtime.exec_env) {
+        wasm_log("Failed to create exec env");
+        wasm_runtime_deinstantiate(g_runtime.module_inst);
+        wasm_runtime_unload(g_runtime.module);
+        g_runtime.module_inst = NULL;
+        g_runtime.module = NULL;
+        return NULL;
+    }
+
+    wasm_log("Module loaded and instantiated");
+    return (void *)g_runtime.module_inst;
+}
+
+int e9wasm_call(void *module, const char *func_name, int argc, const char *argv[])
+{
+    (void)module;
+
+    if (!g_runtime.exec_env) {
+        wasm_log("No execution environment");
+        return -1;
+    }
+
+    wasm_function_inst_t func = wasm_runtime_lookup_function(
+        g_runtime.module_inst, func_name);
+
+    if (!func) {
+        wasm_log("Function not found: %s", func_name);
+        return -1;
+    }
+
+    /* Parse arguments as integers */
+    uint32_t wasm_argc = 0;
+    uint32_t wasm_argv[8] = {0};
+
+    for (int i = 0; i < argc && i < 8; i++) {
+        wasm_argv[i] = (uint32_t)atoi(argv[i]);
+        wasm_argc++;
+    }
+
+    if (!wasm_runtime_call_wasm(g_runtime.exec_env, func, wasm_argc, wasm_argv)) {
+        const char *exception = wasm_runtime_get_exception(g_runtime.module_inst);
+        wasm_log("Call failed: %s", exception ? exception : "unknown");
+        return -1;
+    }
+
+    return 0;
+}
+
+/*
+ * ============================================================================
+ * Shared buffer operations
+ * ============================================================================
+ */
+
+uint8_t *e9wasm_get_shared_buffer(size_t *out_size)
+{
+    if (out_size)
+        *out_size = g_runtime.shared_buffer_size;
+    return g_runtime.shared_buffer;
+}
+
+size_t e9wasm_load_binary(const char *zip_path)
+{
+    if (!g_runtime.shared_buffer) {
+        wasm_log("Shared buffer not allocated");
+        return 0;
+    }
+
+    /* Construct full path */
+    char full_path[512];
+    if (zip_path[0] == '/') {
+        E9_STRCPY_SAFE(full_path, sizeof(full_path), zip_path);
+    } else {
+        snprintf(full_path, sizeof(full_path), "/zip/%s", zip_path);
     }
 
     wasm_log("Loading binary: %s", full_path);
 
-    /* Open from ZipOS */
     int fd = open(full_path, O_RDONLY);
     if (fd < 0) {
-        wasm_log("Failed to open %s: %s", full_path, strerror(errno));
-        m3ApiReturn(0);
+        wasm_log("Failed to open: %s", strerror(errno));
+        return 0;
     }
 
     struct stat st;
-    if (fstat(fd, &st) < 0) {
-        close(fd);
-        m3ApiReturn(0);
-    }
+    fstat(fd, &st);
+    size_t size = st.st_size;
 
-    size_t size = (size_t)st.st_size;
     if (size > g_runtime.shared_buffer_size) {
         wasm_log("Binary too large: %zu > %zu", size, g_runtime.shared_buffer_size);
         close(fd);
-        m3ApiReturn(0);
+        return 0;
     }
 
-    /* Read into shared buffer */
     ssize_t n = read(fd, g_runtime.shared_buffer, size);
     close(fd);
 
     if (n != (ssize_t)size) {
-        wasm_log("Read failed: %zd != %zu", n, size);
-        m3ApiReturn(0);
+        wasm_log("Read error: %zd != %zu", n, size);
+        return 0;
     }
 
     wasm_log("Loaded %zu bytes", size);
-    m3ApiReturn((uint32_t)size);
+    return size;
 }
 
 /*
- * Host function: mmap binary from ZipOS (zero-copy)
+ * ============================================================================
+ * Memory mapping
+ * ============================================================================
  */
-static m3ApiRawFunction(host_mmap_binary) {
-    m3ApiReturnType(uint32_t);
-    m3ApiGetArgMem(const char *, path);
-    m3ApiGetArg(uint32_t, path_len);
-    m3ApiGetArg(uint32_t, writable);
 
+void *e9wasm_mmap_binary(const char *zip_path, size_t *out_size, bool writable)
+{
     char full_path[512];
-    snprintf(full_path, sizeof(full_path), "/zip/%.*s", path_len, path);
+    if (zip_path[0] == '/') {
+        E9_STRCPY_SAFE(full_path, sizeof(full_path), zip_path);
+    } else {
+        snprintf(full_path, sizeof(full_path), "/zip/%s", zip_path);
+    }
 
     wasm_log("mmap binary: %s (writable=%d)", full_path, writable);
 
-    /* Unmap previous if any */
+    /* Unmap previous */
     if (g_runtime.mapped_binary) {
         munmap(g_runtime.mapped_binary, g_runtime.mapped_size);
         close(g_runtime.mapped_fd);
         g_runtime.mapped_binary = NULL;
     }
 
-    /* Open */
     g_runtime.mapped_fd = open(full_path, O_RDONLY);
     if (g_runtime.mapped_fd < 0) {
-        wasm_log("Failed to open for mmap: %s", strerror(errno));
-        m3ApiReturn(0);
+        wasm_log("Failed to open: %s", strerror(errno));
+        return NULL;
     }
 
     struct stat st;
     fstat(g_runtime.mapped_fd, &st);
-    g_runtime.mapped_size = (size_t)st.st_size;
+    g_runtime.mapped_size = st.st_size;
 
-    /* mmap with MAP_PRIVATE for copy-on-write */
     int prot = PROT_READ | (writable ? PROT_WRITE : 0);
     g_runtime.mapped_binary = mmap(NULL, g_runtime.mapped_size,
                                    prot, MAP_PRIVATE,
@@ -225,432 +620,128 @@ static m3ApiRawFunction(host_mmap_binary) {
         wasm_log("mmap failed: %s", strerror(errno));
         close(g_runtime.mapped_fd);
         g_runtime.mapped_binary = NULL;
-        m3ApiReturn(0);
+        return NULL;
     }
+
+    if (out_size)
+        *out_size = g_runtime.mapped_size;
 
     wasm_log("mmap'd %zu bytes at %p", g_runtime.mapped_size, g_runtime.mapped_binary);
-
-    /* Copy to shared buffer for WASM access */
-    if (g_runtime.mapped_size <= g_runtime.shared_buffer_size) {
-        memcpy(g_runtime.shared_buffer, g_runtime.mapped_binary, g_runtime.mapped_size);
-    }
-
-    m3ApiReturn((uint32_t)g_runtime.mapped_size);
+    return g_runtime.mapped_binary;
 }
 
-/*
- * Host function: apply patch to mapped binary
- */
-static m3ApiRawFunction(host_apply_patch) {
-    m3ApiReturnType(int32_t);
-    m3ApiGetArg(uint32_t, offset);
-    m3ApiGetArgMem(const uint8_t *, data);
-    m3ApiGetArg(uint32_t, size);
-
-    if (!g_runtime.mapped_binary) {
-        wasm_log("No binary mapped");
-        m3ApiReturn(-1);
-    }
-
-    if (offset + size > g_runtime.mapped_size) {
-        wasm_log("Patch out of bounds: %u + %u > %zu", offset, size, g_runtime.mapped_size);
-        m3ApiReturn(-1);
-    }
-
-    wasm_log("Applying patch at offset 0x%x, size %u", offset, size);
-
-    /* Ensure page is writable (COW will trigger) */
-    void *page = (void *)((uintptr_t)(g_runtime.mapped_binary + offset) & ~0xFFF);
-    size_t page_size = 4096;
-
-    if (mprotect(page, page_size, PROT_READ | PROT_WRITE) < 0) {
-        wasm_log("mprotect failed: %s", strerror(errno));
-        m3ApiReturn(-1);
-    }
-
-    /* Write patch bytes */
-    memcpy((uint8_t *)g_runtime.mapped_binary + offset, data, size);
-
-    /* Make executable again if needed */
-    mprotect(page, page_size, PROT_READ | PROT_EXEC);
-
-    /* Update shared buffer copy */
-    if (offset + size <= g_runtime.shared_buffer_size) {
-        memcpy(g_runtime.shared_buffer + offset, data, size);
-    }
-
-    wasm_log("Patch applied successfully");
-    m3ApiReturn(0);
-}
-
-/*
- * Host function: flush instruction cache
- */
-static m3ApiRawFunction(host_flush_icache) {
-    m3ApiGetArg(uint32_t, offset);
-    m3ApiGetArg(uint32_t, size);
-
-    if (g_runtime.mapped_binary) {
-        void *addr = (uint8_t *)g_runtime.mapped_binary + offset;
-
-        #ifdef __GNUC__
-        __builtin___clear_cache(addr, (char *)addr + size);
-        #endif
-    }
-
-    m3ApiSuccess();
-}
-
-/*
- * Host function: save patched binary to ZipOS
- */
-static m3ApiRawFunction(host_save_to_zipos) {
-    m3ApiReturnType(int32_t);
-    m3ApiGetArgMem(const char *, name);
-    m3ApiGetArg(uint32_t, name_len);
-    m3ApiGetArg(uint32_t, size);
-
-    if (!g_runtime.mapped_binary || size > g_runtime.mapped_size) {
-        m3ApiReturn(-1);
-    }
-
-    char filename[256];
-    snprintf(filename, sizeof(filename), "%.*s", name_len, name);
-
-    int result = e9wasm_zipos_append(filename, g_runtime.mapped_binary, size);
-    m3ApiReturn(result);
-}
-
-/*
- * Host function: notify host of event
- */
-static m3ApiRawFunction(host_notify) {
-    m3ApiGetArgMem(const char *, event);
-    m3ApiGetArg(uint32_t, event_len);
-    m3ApiGetArgMem(const char *, data);
-    m3ApiGetArg(uint32_t, data_len);
-
-    if (g_runtime.event_callback) {
-        char event_buf[256], data_buf[4096];
-
-        snprintf(event_buf, sizeof(event_buf), "%.*s", event_len, event);
-        snprintf(data_buf, sizeof(data_buf), "%.*s", data_len, data);
-
-        g_runtime.event_callback(event_buf, data_buf, g_runtime.event_userdata);
-    }
-
-    m3ApiSuccess();
-}
-
-/*
- * Link host functions to WASM module
- */
-static int link_host_functions(IM3Module module) {
-    M3Result result;
-
-    #define LINK(name, sig) \
-        result = m3_LinkRawFunction(module, "env", #name, sig, &name); \
-        if (result) { wasm_log("Failed to link " #name ": %s", result); return -1; }
-
-    LINK(host_log, "v(ii)");
-    LINK(host_get_shared_buffer, "i()");
-    LINK(host_get_shared_buffer_size, "i()");
-    LINK(host_load_binary, "i(ii)");
-    LINK(host_mmap_binary, "i(iii)");
-    LINK(host_apply_patch, "i(iii)");
-    LINK(host_flush_icache, "v(ii)");
-    LINK(host_save_to_zipos, "i(iii)");
-    LINK(host_notify, "v(iiii)");
-
-    #undef LINK
-
-    return 0;
-}
-
-#endif /* E9_WASM3_ENABLED */
-
-/*
- * Public API Implementation
- */
-
-int e9wasm_init(const E9WasmConfig *config) {
-    if (g_runtime.initialized) {
-        return 0;
-    }
-
-    /* Store config */
-    if (config) {
-        g_runtime.config = *config;
-    } else {
-        /* Defaults */
-        g_runtime.config.stack_size = 64 * 1024;           /* 64KB */
-        g_runtime.config.heap_size = 16 * 1024 * 1024;     /* 16MB */
-        g_runtime.config.shared_buffer_size = 64 * 1024 * 1024; /* 64MB */
-        g_runtime.config.enable_wasi = true;
-        g_runtime.config.enable_debug = false;
-        g_runtime.config.module_path = "/zip/e9patch.wasm";
-    }
-
-    wasm_log("Initializing WASM runtime");
-
-    /* Allocate shared buffer */
-    g_runtime.shared_buffer = mmap(NULL, g_runtime.config.shared_buffer_size,
-                                   PROT_READ | PROT_WRITE,
-                                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (g_runtime.shared_buffer == MAP_FAILED) {
-        fprintf(stderr, "Failed to allocate shared buffer: %s\n", strerror(errno));
-        return -1;
-    }
-    g_runtime.shared_buffer_size = g_runtime.config.shared_buffer_size;
-
-    /* Get executable path - try multiple methods for portability */
-    g_runtime.exe_path[0] = '\0';
-    {
-        #if defined(__COSMOPOLITAN__)
-        /* Cosmopolitan: use GetProgramExecutableName() from runtime.h */
-        extern char *GetProgramExecutableName(void);
-        char *exe = GetProgramExecutableName();
-        if (exe && exe[0]) {
-            strncpy(g_runtime.exe_path, exe, sizeof(g_runtime.exe_path) - 1);
-            g_runtime.exe_path[sizeof(g_runtime.exe_path) - 1] = '\0';
-        }
-        #elif defined(__linux__)
-        ssize_t len = readlink("/proc/self/exe", g_runtime.exe_path,
-                               sizeof(g_runtime.exe_path) - 1);
-        if (len > 0) g_runtime.exe_path[len] = '\0';
-        #elif defined(__APPLE__)
-        uint32_t size = sizeof(g_runtime.exe_path);
-        _NSGetExecutablePath(g_runtime.exe_path, &size);
-        #elif defined(__FreeBSD__)
-        ssize_t len = readlink("/proc/curproc/file", g_runtime.exe_path,
-                               sizeof(g_runtime.exe_path) - 1);
-        if (len > 0) g_runtime.exe_path[len] = '\0';
-        #else
-        /* Fallback: try /proc/self/exe */
-        ssize_t len = readlink("/proc/self/exe", g_runtime.exe_path,
-                               sizeof(g_runtime.exe_path) - 1);
-        if (len > 0) g_runtime.exe_path[len] = '\0';
-        #endif
-    }
-
-#ifdef E9_WASM3_ENABLED
-    /* Create wasm3 environment */
-    g_runtime.env = m3_NewEnvironment();
-    if (!g_runtime.env) {
-        fprintf(stderr, "Failed to create wasm3 environment\n");
-        return -1;
-    }
-
-    /* Create runtime */
-    g_runtime.runtime = m3_NewRuntime(g_runtime.env,
-                                       g_runtime.config.stack_size,
-                                       NULL);
-    if (!g_runtime.runtime) {
-        fprintf(stderr, "Failed to create wasm3 runtime\n");
-        m3_FreeEnvironment(g_runtime.env);
-        return -1;
-    }
-
-    wasm_log("wasm3 runtime created");
-#else
-    wasm_log("wasm3 not enabled, running in stub mode");
-#endif
-
-    g_runtime.initialized = true;
-    return 0;
-}
-
-void e9wasm_shutdown(void) {
-    if (!g_runtime.initialized) return;
-
-#ifdef E9_WASM3_ENABLED
-    if (g_runtime.runtime) {
-        m3_FreeRuntime(g_runtime.runtime);
-    }
-    if (g_runtime.env) {
-        m3_FreeEnvironment(g_runtime.env);
-    }
-#endif
-
-    if (g_runtime.mapped_binary) {
+void e9wasm_munmap_binary(void *addr, size_t size)
+{
+    if (addr == g_runtime.mapped_binary) {
         munmap(g_runtime.mapped_binary, g_runtime.mapped_size);
         close(g_runtime.mapped_fd);
+        g_runtime.mapped_binary = NULL;
+        g_runtime.mapped_size = 0;
+        g_runtime.mapped_fd = -1;
+    } else if (addr) {
+        munmap(addr, size);
     }
-
-    if (g_runtime.shared_buffer) {
-        munmap(g_runtime.shared_buffer, g_runtime.shared_buffer_size);
-    }
-
-    memset(&g_runtime, 0, sizeof(g_runtime));
 }
 
-void *e9wasm_load_module(const char *path) {
-#ifdef E9_WASM3_ENABLED
-    if (!g_runtime.initialized) return NULL;
-
-    wasm_log("Loading module: %s", path);
-
-    /* Read WASM file from ZipOS */
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) {
-        wasm_log("Failed to open %s: %s", path, strerror(errno));
-        return NULL;
-    }
-
-    struct stat st;
-    fstat(fd, &st);
-    size_t size = (size_t)st.st_size;
-
-    uint8_t *wasm_bytes = malloc(size);
-    if (!wasm_bytes) {
-        close(fd);
-        return NULL;
-    }
-
-    read(fd, wasm_bytes, size);
-    close(fd);
-
-    /* Parse module */
-    M3Result result = m3_ParseModule(g_runtime.env, &g_runtime.module,
-                                     wasm_bytes, size);
-    free(wasm_bytes);
-
-    if (result) {
-        wasm_log("Failed to parse module: %s", result);
-        return NULL;
-    }
-
-    /* Load into runtime */
-    result = m3_LoadModule(g_runtime.runtime, g_runtime.module);
-    if (result) {
-        wasm_log("Failed to load module: %s", result);
-        return NULL;
-    }
-
-    /* Link host functions */
-    if (link_host_functions(g_runtime.module) < 0) {
-        return NULL;
-    }
-
-    wasm_log("Module loaded and linked");
-    return g_runtime.module;
-#else
-    (void)path;
-    return NULL;
-#endif
-}
-
-int e9wasm_call(void *module, const char *func_name, int argc, const char *argv[]) {
-#ifdef E9_WASM3_ENABLED
-    if (!module) return -1;
-
-    IM3Function func;
-    M3Result result = m3_FindFunction(&func, g_runtime.runtime, func_name);
-    if (result) {
-        wasm_log("Function not found: %s (%s)", func_name, result);
+int e9wasm_apply_patch(void *mapped, size_t offset, const uint8_t *data, size_t size)
+{
+    if (!mapped || !data)
         return -1;
-    }
 
-    result = m3_CallArgv(func, argc, argv);
-    if (result) {
-        wasm_log("Call failed: %s", result);
-        return -1;
-    }
-
-    return 0;
-#else
-    (void)module; (void)func_name; (void)argc; (void)argv;
-    return -1;
-#endif
-}
-
-uint8_t *e9wasm_get_shared_buffer(size_t *out_size) {
-    if (out_size) *out_size = g_runtime.shared_buffer_size;
-    return g_runtime.shared_buffer;
-}
-
-size_t e9wasm_load_binary(const char *zip_path) {
-    char full_path[512];
-    snprintf(full_path, sizeof(full_path), "/zip/%s", zip_path);
-
-    int fd = open(full_path, O_RDONLY);
-    if (fd < 0) return 0;
-
-    struct stat st;
-    fstat(fd, &st);
-    size_t size = (size_t)st.st_size;
-
-    if (size > g_runtime.shared_buffer_size) {
-        close(fd);
-        return 0;
-    }
-
-    ssize_t n = read(fd, g_runtime.shared_buffer, size);
-    close(fd);
-
-    return n > 0 ? (size_t)n : 0;
-}
-
-void *e9wasm_mmap_binary(const char *zip_path, size_t *out_size, bool writable) {
-    char full_path[512];
-    snprintf(full_path, sizeof(full_path), "/zip/%s", zip_path);
-
-    int fd = open(full_path, O_RDONLY);
-    if (fd < 0) return NULL;
-
-    struct stat st;
-    fstat(fd, &st);
-    size_t size = (size_t)st.st_size;
-
-    int prot = PROT_READ | (writable ? PROT_WRITE : 0);
-    void *addr = mmap(NULL, size, prot, MAP_PRIVATE, fd, 0);
-
-    if (addr == MAP_FAILED) {
-        close(fd);
-        return NULL;
-    }
-
-    /* Keep fd open for potential re-mapping */
-    if (out_size) *out_size = size;
-    return addr;
-}
-
-void e9wasm_munmap_binary(void *addr, size_t size) {
-    if (addr) munmap(addr, size);
-}
-
-int e9wasm_apply_patch(void *mapped, size_t offset, const uint8_t *data, size_t size) {
-    if (!mapped) return -1;
-
-    /* Make page writable */
-    void *page = (void *)((uintptr_t)((uint8_t *)mapped + offset) & ~0xFFF);
-    if (mprotect(page, 4096, PROT_READ | PROT_WRITE) < 0) {
-        return -1;
-    }
-
-    /* Write patch */
     memcpy((uint8_t *)mapped + offset, data, size);
-
-    /* Restore execute permission */
-    mprotect(page, 4096, PROT_READ | PROT_EXEC);
-
     return 0;
 }
 
-void e9wasm_flush_icache(void *addr, size_t size) {
-#ifdef __GNUC__
+void e9wasm_flush_icache(void *addr, size_t size)
+{
+#if defined(__aarch64__) || defined(_M_ARM64)
     __builtin___clear_cache(addr, (char *)addr + size);
 #else
-    (void)addr; (void)size;
+    /* x86-64: icache coherent with dcache */
+    (void)addr;
+    (void)size;
 #endif
 }
 
-void e9wasm_set_event_callback(E9WasmEventCallback callback, void *userdata) {
+/*
+ * ============================================================================
+ * Event handling
+ * ============================================================================
+ */
+
+void e9wasm_set_event_callback(E9WasmEventCallback callback, void *userdata)
+{
     g_runtime.event_callback = callback;
     g_runtime.event_userdata = userdata;
 }
 
-int e9wasm_zipos_append(const char *name, const uint8_t *data, size_t size) {
+/*
+ * ============================================================================
+ * ZipOS operations
+ * ============================================================================
+ */
+
+const char *e9wasm_get_exe_path(void)
+{
+    return g_runtime.exe_path;
+}
+
+int e9wasm_zipos_available(void)
+{
+    /* Check if /zip/ is accessible */
+    struct stat st;
+    return (stat("/zip", &st) == 0) ? 1 : 0;
+}
+
+uint8_t *e9wasm_zipos_read(const char *name, size_t *out_size)
+{
+    char full_path[512];
+
+    if (name[0] == '/') {
+        E9_STRCPY_SAFE(full_path, sizeof(full_path), name);
+    } else {
+        snprintf(full_path, sizeof(full_path), "/zip/%s", name);
+    }
+
+    int fd = open(full_path, O_RDONLY);
+    if (fd < 0) {
+        return NULL;
+    }
+
+    struct stat st;
+    if (fstat(fd, &st) < 0) {
+        close(fd);
+        return NULL;
+    }
+
+    size_t size = st.st_size;
+    uint8_t *data = malloc(size);
+    if (!data) {
+        close(fd);
+        return NULL;
+    }
+
+    if (read(fd, data, size) != (ssize_t)size) {
+        free(data);
+        close(fd);
+        return NULL;
+    }
+
+    close(fd);
+
+    if (out_size)
+        *out_size = size;
+
+    return data;
+}
+
+int e9wasm_zipos_append(const char *name, const uint8_t *data, size_t size)
+{
+    if (!g_runtime.exe_path[0]) {
+        wasm_log("Executable path not available");
+        return -1;
+    }
+
     /* Open executable for appending */
     int fd = open(g_runtime.exe_path, O_RDWR | O_APPEND);
     if (fd < 0) {
@@ -659,23 +750,8 @@ int e9wasm_zipos_append(const char *name, const uint8_t *data, size_t size) {
     }
 
     /*
-     * ZIP Local File Header format:
-     * 4 bytes: signature (0x04034b50)
-     * 2 bytes: version needed (20 = 2.0)
-     * 2 bytes: flags (0)
-     * 2 bytes: compression (0 = STORE)
-     * 2 bytes: mod time
-     * 2 bytes: mod date
-     * 4 bytes: CRC-32
-     * 4 bytes: compressed size
-     * 4 bytes: uncompressed size
-     * 2 bytes: filename length
-     * 2 bytes: extra field length (0)
-     * n bytes: filename
-     * m bytes: extra field
-     * x bytes: file data
+     * ZIP Local File Header format
      */
-
     size_t name_len = strlen(name);
 
     uint8_t header[30];
@@ -687,13 +763,8 @@ int e9wasm_zipos_append(const char *name, const uint8_t *data, size_t size) {
     /* Version needed (2.0) */
     header[4] = 20; header[5] = 0;
 
-    /* Flags, compression (STORE) */
-    header[6] = 0; header[7] = 0;
+    /* Compression: STORE (0) */
     header[8] = 0; header[9] = 0;
-
-    /* TODO: proper CRC calculation */
-    uint32_t crc = 0;
-    memcpy(&header[14], &crc, 4);
 
     /* Sizes */
     uint32_t size32 = (uint32_t)size;
@@ -704,247 +775,67 @@ int e9wasm_zipos_append(const char *name, const uint8_t *data, size_t size) {
     uint16_t name_len16 = (uint16_t)name_len;
     memcpy(&header[26], &name_len16, 2);
 
-    /* Extra field length (0) */
-    header[28] = 0; header[29] = 0;
-
-    /* Write header */
+    /* Write with error checking */
     if (write(fd, header, sizeof(header)) != (ssize_t)sizeof(header)) {
         close(fd);
         wasm_log("Failed to write ZIP header: %s", strerror(errno));
         return -1;
     }
 
-    /* Write filename */
     if (write(fd, name, name_len) != (ssize_t)name_len) {
         close(fd);
         wasm_log("Failed to write ZIP filename: %s", strerror(errno));
         return -1;
     }
 
-    /* Write data */
     if (write(fd, data, size) != (ssize_t)size) {
         close(fd);
         wasm_log("Failed to write ZIP data: %s", strerror(errno));
         return -1;
     }
 
-    /* TODO: Update central directory and EOCD */
-    /* This is a simplified implementation - full impl needs to:
-     * 1. Read existing central directory
-     * 2. Add new entry
-     * 3. Write new central directory
-     * 4. Write new EOCD
-     */
-
     close(fd);
-
     wasm_log("Appended %zu bytes as %s", size, name);
     return 0;
 }
 
-int e9wasm_zipos_list(E9WasmZipCallback callback, void *userdata) {
-    /* Simple approach: iterate /zip/ directory */
-    /* Full implementation would parse ZIP central directory */
-
-    /* For now, just try to open /zip/ as directory */
-    /* Cosmopolitan provides this as a virtual directory */
-
-    /* TODO: implement proper ZIP directory listing */
+int e9wasm_zipos_list(E9WasmZipCallback callback, void *userdata)
+{
     (void)callback;
     (void)userdata;
-    return 0;
-}
 
-const char *e9wasm_get_exe_path(void) {
-    return g_runtime.exe_path;
-}
-
-/*
- * Embedded ZipOS support
- * Reads ZIP content appended to the end of the executable
- */
-
-/* ZIP file signatures */
-#define ZIP_EOCD_SIGNATURE  0x06054b50  /* End of Central Directory */
-#define ZIP_CD_SIGNATURE    0x02014b50  /* Central Directory entry */
-#define ZIP_LOCAL_SIGNATURE 0x04034b50  /* Local file header */
-
-/* Find the embedded ZIP in the executable */
-static uint8_t *find_embedded_zip(size_t *zip_size) {
-    const char *exe = e9wasm_get_exe_path();
-    if (!exe || !exe[0]) return NULL;
-
-    int fd = open(exe, O_RDONLY);
-    if (fd < 0) return NULL;
-
-    struct stat st;
-    if (fstat(fd, &st) < 0) {
-        close(fd);
-        return NULL;
-    }
-
-    /* Memory map the executable */
-    uint8_t *data = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    close(fd);
-
-    if (data == MAP_FAILED) return NULL;
-
-    /* Search backwards for EOCD signature */
-    /* EOCD is at least 22 bytes, max comment is 65535 */
-    size_t search_start = st.st_size > 65557 ? st.st_size - 65557 : 0;
-
-    for (size_t i = st.st_size - 22; i >= search_start; i--) {
-        uint32_t sig;
-        memcpy(&sig, data + i, 4);
-        if (sig == ZIP_EOCD_SIGNATURE) {
-            /* Found EOCD - get central directory offset */
-            uint32_t cd_offset;  /* Central directory offset (within ZIP) */
-            uint32_t cd_size;    /* Central directory size */
-            memcpy(&cd_size, data + i + 12, 4);
-            memcpy(&cd_offset, data + i + 16, 4);
-
-            /* ZIP end is at EOCD + 22 bytes (minimum EOCD size) */
-            size_t eocd_pos = i;
-
-            /* For an appended ZIP, cd_offset is relative to ZIP start.
-             * The EOCD position minus cd_size minus cd_offset gives us where
-             * the ZIP should start. But cd_offset is from ZIP start, so:
-             * zip_start + cd_offset = eocd_pos - cd_size
-             * Therefore: zip_start = eocd_pos - cd_size - cd_offset
-             */
-            if (eocd_pos >= cd_size + cd_offset) {
-                size_t zip_start = eocd_pos - cd_size - cd_offset;
-
-                /* Verify this looks like a valid ZIP start */
-                uint32_t local_sig;
-                memcpy(&local_sig, data + zip_start, 4);
-                if (local_sig == ZIP_LOCAL_SIGNATURE) {
-                    /* Calculate total ZIP size */
-                    *zip_size = eocd_pos + 22 - zip_start;
-                    uint8_t *zip_copy = malloc(*zip_size);
-                    if (zip_copy) {
-                        memcpy(zip_copy, data + zip_start, *zip_size);
-                    }
-                    munmap(data, st.st_size);
-                    return zip_copy;
-                }
-            }
-            break;
-        }
-    }
-
-    munmap(data, st.st_size);
-    return NULL;
-}
-
-/* Cached embedded ZIP */
-static uint8_t *g_embedded_zip = NULL;
-static size_t g_embedded_zip_size = 0;
-
-static void ensure_embedded_zip(void) {
-    if (!g_embedded_zip) {
-        g_embedded_zip = find_embedded_zip(&g_embedded_zip_size);
-    }
-}
-
-int e9wasm_zipos_available(void) {
-    ensure_embedded_zip();
-    return g_embedded_zip != NULL ? 1 : 0;
-}
-
-/* Read file from embedded ZIP */
-uint8_t *e9wasm_zipos_read(const char *name, size_t *out_size) {
-    ensure_embedded_zip();
-    if (!g_embedded_zip) return NULL;
-
-    /* Skip leading slash or ./ */
-    const char *orig_name = name;
-    while (*name == '/' || (*name == '.' && *(name+1) == '/')) {
-        name++;
-        if (*(name-1) == '.') name++;
-    }
-
-    size_t search_len = strlen(name);
-
-    /* Parse local file headers */
-    size_t offset = 0;
-    while (offset + 30 < g_embedded_zip_size) {
-        uint32_t sig;
-        memcpy(&sig, g_embedded_zip + offset, 4);
-
-        if (sig != ZIP_LOCAL_SIGNATURE) break;
-
-        uint16_t name_len, extra_len;
-        uint32_t comp_size, uncomp_size;
-
-        memcpy(&comp_size, g_embedded_zip + offset + 18, 4);
-        memcpy(&uncomp_size, g_embedded_zip + offset + 22, 4);
-        memcpy(&name_len, g_embedded_zip + offset + 26, 2);
-        memcpy(&extra_len, g_embedded_zip + offset + 28, 2);
-
-        if (offset + 30 + name_len > g_embedded_zip_size) break;
-
-        /* Compare filename */
-        char *entry_name = (char *)(g_embedded_zip + offset + 30);
-
-        if (name_len == search_len && memcmp(entry_name, name, name_len) == 0) {
-            /* Found it! */
-            size_t data_offset = offset + 30 + name_len + extra_len;
-            if (data_offset + uncomp_size > g_embedded_zip_size) return NULL;
-
-            uint8_t *result = malloc(uncomp_size + 1);
-            if (!result) return NULL;
-
-            memcpy(result, g_embedded_zip + data_offset, uncomp_size);
-            result[uncomp_size] = '\0';  /* Null-terminate for convenience */
-
-            if (out_size) *out_size = uncomp_size;
-            return result;
-        }
-
-        /* Move to next entry */
-        offset += 30 + name_len + extra_len + comp_size;
-    }
-
-    (void)orig_name;  /* Suppress unused warning */
-    return NULL;
+    /* TODO: Implement ZIP directory parsing */
+    wasm_log("zipos_list not yet implemented");
+    return -1;
 }
 
 /*
- * TUI implementation (minimal terminal UI)
+ * ============================================================================
+ * TUI functions (stubs)
+ * ============================================================================
  */
-static bool g_tui_initialized = false;
 
-int e9wasm_tui_init(void) {
-    if (g_tui_initialized) return 0;
-
-    /* Put terminal in raw mode */
-    printf("\033[?1049h");  /* Alternate screen buffer */
-    printf("\033[2J");      /* Clear screen */
-    printf("\033[H");       /* Home cursor */
-    fflush(stdout);
-
-    g_tui_initialized = true;
-    return 0;
+int e9wasm_tui_init(void) { return 0; }
+void e9wasm_tui_shutdown(void) {}
+void e9wasm_tui_refresh(void) {}
+int e9wasm_tui_get_key(void) { return -1; }
+void e9wasm_tui_print(int row, int col, const char *text)
+{
+    (void)row; (void)col; (void)text;
 }
+void e9wasm_tui_clear(void) {}
 
-void e9wasm_tui_shutdown(void) {
-    if (!g_tui_initialized) return;
+/*
+ * ============================================================================
+ * File watching (stub)
+ * ============================================================================
+ */
 
-    printf("\033[?1049l");  /* Normal screen buffer */
-    fflush(stdout);
-
-    g_tui_initialized = false;
-}
-
-void e9wasm_tui_refresh(void) {
-    fflush(stdout);
-}
-
-void e9wasm_tui_print(int row, int col, const char *text) {
-    printf("\033[%d;%dH%s", row + 1, col + 1, text);
-}
-
-void e9wasm_tui_clear(void) {
-    printf("\033[2J\033[H");
+int e9wasm_watch_file(const char *path, E9WasmFileCallback callback, void *userdata)
+{
+    (void)path;
+    (void)callback;
+    (void)userdata;
+    wasm_log("File watching not yet implemented");
+    return -1;
 }

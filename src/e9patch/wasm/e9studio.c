@@ -45,6 +45,16 @@
 #endif
 
 /*
+ * Execution mode for WASM runtime
+ */
+typedef enum {
+    EXEC_MODE_DEFAULT = 0,   /* Use best available (Fast JIT if supported) */
+    EXEC_MODE_INTERP = 1,    /* Fast interpreter */
+    EXEC_MODE_JIT = 2,       /* Fast JIT compilation */
+    EXEC_MODE_AOT = 3        /* Ahead-of-time compiled modules */
+} ExecMode;
+
+/*
  * Studio Configuration
  */
 typedef struct {
@@ -55,6 +65,7 @@ typedef struct {
     bool verbose;                   /* Verbose output */
     bool tui_mode;                  /* Terminal UI mode */
     bool self_test;                 /* Run self-tests */
+    ExecMode exec_mode;             /* WASM execution mode */
 } StudioConfig;
 
 static StudioConfig g_config = {
@@ -65,6 +76,7 @@ static StudioConfig g_config = {
     .verbose = false,
     .tui_mode = true,
     .self_test = false,
+    .exec_mode = EXEC_MODE_DEFAULT,
 };
 
 /*
@@ -96,6 +108,11 @@ static void print_usage(const char *prog) {
     printf("  --verbose, -v        Verbose output\n");
     printf("  --self-test          Run internal tests\n");
     printf("  --help, -h           Show this help\n");
+    printf("\n");
+    printf("Execution Mode (WAMR runtime):\n");
+    printf("  --jit                Use Fast JIT compilation (default if available)\n");
+    printf("  --interp             Use fast interpreter (slower but more portable)\n");
+    printf("  --aot                Use ahead-of-time compiled modules\n");
     printf("\n");
     printf("Interactive mode:\n");
     printf("  'e' - Edit source file\n");
@@ -132,6 +149,12 @@ static int parse_args(int argc, char **argv) {
             g_config.verbose = true;
         } else if (strcmp(argv[i], "--self-test") == 0) {
             g_config.self_test = true;
+        } else if (strcmp(argv[i], "--jit") == 0) {
+            g_config.exec_mode = EXEC_MODE_JIT;
+        } else if (strcmp(argv[i], "--interp") == 0) {
+            g_config.exec_mode = EXEC_MODE_INTERP;
+        } else if (strcmp(argv[i], "--aot") == 0) {
+            g_config.exec_mode = EXEC_MODE_AOT;
         } else if (argv[i][0] != '-') {
             g_config.target_path = argv[i];
         } else {
@@ -212,6 +235,31 @@ static int load_target(void) {
  */
 static int init_wasm(void) {
     studio_log("Initializing WASM runtime...");
+
+    /* Set execution mode before init */
+    int wasm_mode;
+    const char *mode_name;
+    switch (g_config.exec_mode) {
+        case EXEC_MODE_INTERP:
+            wasm_mode = 0;  /* E9_WASM_MODE_INTERP */
+            mode_name = "Fast Interpreter";
+            break;
+        case EXEC_MODE_JIT:
+            wasm_mode = 1;  /* E9_WASM_MODE_FAST_JIT */
+            mode_name = "Fast JIT";
+            break;
+        case EXEC_MODE_AOT:
+            wasm_mode = 2;  /* E9_WASM_MODE_AOT */
+            mode_name = "AOT";
+            break;
+        case EXEC_MODE_DEFAULT:
+        default:
+            wasm_mode = 1;  /* Default to Fast JIT */
+            mode_name = "Fast JIT (default)";
+            break;
+    }
+    e9wasm_set_exec_mode(wasm_mode);
+    studio_log("WAMR execution mode: %s", mode_name);
 
     E9WasmConfig config = {
         .stack_size = 64 * 1024,

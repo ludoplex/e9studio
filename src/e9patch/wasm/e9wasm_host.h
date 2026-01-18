@@ -2,8 +2,13 @@
  * e9wasm_host.h
  * Embedded WASM VM Host for e9patch
  *
- * Replaces Chrome/browser as the WASM runtime. Uses wasm3 interpreter
- * embedded directly in the APE binary with direct ZipOS access.
+ * Replaces Chrome/browser as the WASM runtime. Uses WAMR (WebAssembly
+ * Micro Runtime) with Fast JIT for high-performance execution.
+ *
+ * Execution modes:
+ *   - Fast Interpreter: Portable, moderate speed
+ *   - Fast JIT: JIT compilation without LLVM, best performance
+ *   - AOT: Pre-compiled native code for maximum performance
  *
  * Copyright (C) 2024 E9Patch Contributors
  * License: GPLv3+
@@ -31,6 +36,12 @@ typedef struct {
     bool enable_debug;          /* Enable debug logging */
     const char *module_path;    /* Path to main WASM module (in ZipOS) */
 } E9WasmConfig;
+
+/*
+ * Set execution mode (call BEFORE e9wasm_init)
+ * mode: 0=interpreter, 1=fast_jit (default), 2=aot
+ */
+void e9wasm_set_exec_mode(int mode);
 
 /*
  * Initialize WASM runtime

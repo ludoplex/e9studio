@@ -105,7 +105,7 @@ test: $(OUTPUT)
 	$(OUTPUT) --self-test || echo "Self-test completed (some failures expected without full runtime)"
 	@echo ""
 	@echo "3. Testing vendor library:"
-	cd src/e9patch/vendor && make CC=gcc test
+	cd src/e9patch/vendor && $(MAKE) CC=$(CC) AR=$(AR) test
 	@echo ""
 	@echo "=== Tests completed ==="
 

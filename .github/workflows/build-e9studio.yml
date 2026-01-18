@@ -23,19 +23,20 @@ jobs:
 
       - name: Download cosmocc
         run: |
-          mkdir -p /opt/cosmo
           curl -fsSL https://cosmo.zip/pub/cosmocc/cosmocc.zip -o /tmp/cosmocc.zip
-          unzip -q /tmp/cosmocc.zip -d /opt/cosmo
+          mkdir -p /opt/cosmo
+          cd /opt/cosmo && unzip -q /tmp/cosmocc.zip
+          # Debug: show structure
+          ls -la /opt/cosmo/bin/ | head -5
+          /opt/cosmo/bin/cosmocc --version
 
       - name: Build e9studio (APE)
         run: |
-          export PATH="/opt/cosmo/bin:$PATH"
-          make -f Makefile.e9studio CC=cosmocc AR=cosmoar all
+          make -f Makefile.e9studio CC=/opt/cosmo/bin/cosmocc AR=/opt/cosmo/bin/cosmoar all
 
       - name: Run vendor library tests
         run: |
-          export PATH="/opt/cosmo/bin:$PATH"
-          make -f Makefile.e9studio CC=cosmocc AR=cosmoar test
+          make -f Makefile.e9studio CC=/opt/cosmo/bin/cosmocc AR=/opt/cosmo/bin/cosmoar test
 
       - name: Create embedded resources
         run: |

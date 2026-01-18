@@ -209,10 +209,11 @@ E9SigMatch *e9_sig_scan(E9SigScanner *scanner, const uint8_t *data, size_t size,
     /* Scan for normal signatures */
     for (size_t pos = 0; pos < size; pos++) {
         uint8_t byte = data[pos];
-        struct { const E9Signature **sigs; size_t count; } *bucket = &scanner->first_byte[byte];
+        const E9Signature **bucket_sigs = scanner->first_byte[byte].sigs;
+        size_t bucket_count = scanner->first_byte[byte].count;
 
-        for (size_t i = 0; i < bucket->count; i++) {
-            const E9Signature *sig = bucket->sigs[i];
+        for (size_t i = 0; i < bucket_count; i++) {
+            const E9Signature *sig = bucket_sigs[i];
             if (check_sig_at(data, size, pos, sig)) {
                 if (num_matches >= capacity) {
                     capacity *= 2;

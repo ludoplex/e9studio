@@ -67,7 +67,7 @@ jobs:
   # Test APE on macOS (Intel)
   test-macos-intel:
     needs: build-ape
-    runs-on: macos-13
+    runs-on: macos-15
     steps:
       - name: Download APE artifact
         uses: actions/download-artifact@v4
@@ -83,7 +83,7 @@ jobs:
   # Test APE on macOS (Apple Silicon)
   test-macos-arm:
     needs: build-ape
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - name: Download APE artifact
         uses: actions/download-artifact@v4

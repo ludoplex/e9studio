@@ -1,0 +1,25 @@
+{
+    // E9Patch server hostname
+    "server_host": "localhost",
+
+    // E9Patch server port
+    "server_port": 9229,
+
+    // Automatically connect to server on startup
+    "auto_connect": true,
+
+    // Automatically send changes on file save
+    "auto_reload": true,
+
+    // Show notification messages
+    "show_notifications": true,
+
+    // Browser debugger URL
+    "browser_url": "http://localhost:8080",
+
+    // File patterns to watch for changes
+    "file_patterns": [
+        "*.c", "*.cpp", "*.cc", "*.cxx",
+        "*.h", "*.hpp", "*.hxx"
+    ]
+}

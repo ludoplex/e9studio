@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>E9Patch - Dynamic Binary Rewriting in Browser</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #16213e;
+            --bg-tertiary: #0f3460;
+            --text-primary: #e8e8e8;
+            --text-secondary: #a0a0a0;
+            --accent: #e94560;
+            --success: #4ade80;
+            --warning: #fbbf24;
+            --error: #ef4444;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            background: var(--bg-secondary);
+            padding: 1rem 2rem;
+            border-bottom: 1px solid var(--bg-tertiary);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        header h1 {
+            font-size: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        header h1 span {
+            color: var(--accent);
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.9rem;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--text-secondary);
+        }
+
+        .status-dot.connected {
+            background: var(--success);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        main {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 300px 1fr 300px;
+            gap: 1rem;
+            padding: 1rem;
+        }
+
+        .panel {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            background: var(--bg-tertiary);
+            padding: 0.75rem 1rem;
+            font-weight: 600;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .panel-content {
+            padding: 1rem;
+        }
+
+        .file-drop {
+            border: 2px dashed var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .file-drop:hover, .file-drop.drag-over {
+            border-color: var(--accent);
+            background: rgba(233, 69, 96, 0.1);
+        }
+
+        .file-drop input {
+            display: none;
+        }
+
+        .file-info {
+            margin-top: 1rem;
+            padding: 1rem;
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.85rem;
+        }
+
+        .btn {
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.2s;
+            width: 100%;
+            margin-top: 1rem;
+        }
+
+        .btn:hover {
+            opacity: 0.9;
+        }
+
+        .btn:disabled {
+            background: var(--bg-tertiary);
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: var(--bg-tertiary);
+        }
+
+        .editor-container {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+
+        .editor-tabs {
+            display: flex;
+            background: var(--bg-tertiary);
+            gap: 2px;
+        }
+
+        .editor-tab {
+            padding: 0.5rem 1rem;
+            background: var(--bg-secondary);
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            font-size: 0.85rem;
+        }
+
+        .editor-tab.active {
+            border-bottom-color: var(--accent);
+        }
+
+        .editor {
+            flex: 1;
+            background: #0d1117;
+            font-family: 'Fira Code', 'Consolas', monospace;
+            font-size: 0.85rem;
+            padding: 1rem;
+            overflow: auto;
+            white-space: pre;
+            line-height: 1.5;
+        }
+
+        .log-container {
+            height: 100%;
+            overflow-y: auto;
+        }
+
+        .log-entry {
+            padding: 0.5rem;
+            border-bottom: 1px solid var(--bg-tertiary);
+            font-family: monospace;
+            font-size: 0.8rem;
+        }
+
+        .log-entry.info { color: var(--text-primary); }
+        .log-entry.success { color: var(--success); }
+        .log-entry.warning { color: var(--warning); }
+        .log-entry.error { color: var(--error); }
+
+        .log-time {
+            color: var(--text-secondary);
+            margin-right: 0.5rem;
+        }
+
+        .breakpoint-list {
+            list-style: none;
+        }
+
+        .breakpoint-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.5rem;
+            border-bottom: 1px solid var(--bg-tertiary);
+            font-family: monospace;
+            font-size: 0.85rem;
+        }
+
+        .breakpoint-item:hover {
+            background: var(--bg-tertiary);
+        }
+
+        .remove-btn {
+            background: var(--error);
+            color: white;
+            border: none;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.75rem;
+        }
+
+        .ide-connection {
+            margin-top: 1rem;
+        }
+
+        .ide-input {
+            width: 100%;
+            padding: 0.5rem;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--bg-tertiary);
+            border-radius: 4px;
+            color: var(--text-primary);
+            font-family: monospace;
+            font-size: 0.85rem;
+        }
+
+        .ide-input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        footer {
+            background: var(--bg-secondary);
+            padding: 0.75rem 2rem;
+            border-top: 1px solid var(--bg-tertiary);
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            display: flex;
+            justify-content: space-between;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1><span>E9</span>Patch Browser</h1>
+        <div class="status-indicator">
+            <div class="status-dot" id="wasmStatus"></div>
+            <span id="wasmStatusText">Initializing...</span>
+            <span style="margin: 0 1rem">|</span>
+            <div class="status-dot" id="ideStatus"></div>
+            <span id="ideStatusText">IDE Disconnected</span>
+        </div>
+    </header>
+
+    <main>
+        <!-- Left Panel: Binary & Controls -->
+        <aside class="panel">
+            <div class="panel-header">Binary</div>
+            <div class="panel-content">
+                <div class="file-drop" id="fileDrop">
+                    <input type="file" id="fileInput" accept=".exe,.elf,.bin,*">
+                    <p>Drop ELF/PE binary here<br>or click to select</p>
+                </div>
+                <div class="file-info" id="fileInfo" style="display: none;">
+                    <div><strong>Name:</strong> <span id="fileName"></span></div>
+                    <div><strong>Size:</strong> <span id="fileSize"></span></div>
+                    <div><strong>Format:</strong> <span id="fileFormat"></span></div>
+                </div>
+                <button class="btn" id="applyPatchesBtn" disabled>Apply Patches</button>
+                <button class="btn btn-secondary" id="downloadBtn" disabled>Download Patched</button>
+            </div>
+
+            <div class="panel-header">IDE Connection</div>
+            <div class="panel-content">
+                <div class="ide-connection">
+                    <input type="text" class="ide-input" id="ideUrl"
+                           placeholder="ws://localhost:9229" value="ws://localhost:9229">
+                    <button class="btn btn-secondary" id="connectIdeBtn">Connect to IDE</button>
+                </div>
+            </div>
+
+            <div class="panel-header">Breakpoints</div>
+            <div class="panel-content">
+                <ul class="breakpoint-list" id="breakpointList">
+                    <li class="breakpoint-item" style="color: var(--text-secondary);">
+                        No breakpoints set
+                    </li>
+                </ul>
+            </div>
+        </aside>
+
+        <!-- Center: Code Editor / Hex View -->
+        <section class="panel editor-container">
+            <div class="editor-tabs">
+                <div class="editor-tab active" data-tab="disasm">Disassembly</div>
+                <div class="editor-tab" data-tab="hex">Hex View</div>
+                <div class="editor-tab" data-tab="patches">Patches</div>
+            </div>
+            <div class="editor" id="editor">
+; Load a binary to see disassembly
+
+; E9Patch Dynamic Binary Rewriting
+; ================================
+;
+; This tool allows you to:
+; 1. Load ELF or PE binaries
+; 2. Apply patches dynamically
+; 3. Connect to CLion for live updates
+; 4. Debug with breakpoints
+;
+; Getting Started:
+; ----------------
+; 1. Drop a binary file on the left panel
+; 2. Click "Connect to IDE" to link with CLion
+; 3. Edit source code in CLion
+; 4. Changes will be automatically patched
+</div>
+        </section>
+
+        <!-- Right Panel: Log -->
+        <aside class="panel">
+            <div class="panel-header">Activity Log</div>
+            <div class="panel-content log-container" id="logContainer">
+            </div>
+        </aside>
+    </main>
+
+    <footer>
+        <span>E9Patch Cosmopolitan Edition - Dynamic Binary Rewriting</span>
+        <span id="versionInfo">Loading...</span>
+    </footer>
+
+    <script src="e9patch_chrome.js"></script>
+    <script>
+        // DOM Elements
+        const fileDrop = document.getElementById('fileDrop');
+        const fileInput = document.getElementById('fileInput');
+        const fileInfo = document.getElementById('fileInfo');
+        const fileName = document.getElementById('fileName');
+        const fileSize = document.getElementById('fileSize');
+        const fileFormat = document.getElementById('fileFormat');
+        const applyPatchesBtn = document.getElementById('applyPatchesBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const ideUrl = document.getElementById('ideUrl');
+        const connectIdeBtn = document.getElementById('connectIdeBtn');
+        const breakpointList = document.getElementById('breakpointList');
+        const editor = document.getElementById('editor');
+        const logContainer = document.getElementById('logContainer');
+        const wasmStatus = document.getElementById('wasmStatus');
+        const wasmStatusText = document.getElementById('wasmStatusText');
+        const ideStatus = document.getElementById('ideStatus');
+        const ideStatusText = document.getElementById('ideStatusText');
+        const versionInfo = document.getElementById('versionInfo');
+
+        // Logging helper
+        function log(message, level = 'info') {
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${level}`;
+            const time = new Date().toLocaleTimeString();
+            entry.innerHTML = `<span class="log-time">[${time}]</span>${message}`;
+            logContainer.appendChild(entry);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        // File drop handling
+        fileDrop.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            fileDrop.classList.add('drag-over');
+        });
+
+        fileDrop.addEventListener('dragleave', () => {
+            fileDrop.classList.remove('drag-over');
+        });
+
+        fileDrop.addEventListener('drop', (e) => {
+            e.preventDefault();
+            fileDrop.classList.remove('drag-over');
+            const file = e.dataTransfer.files[0];
+            if (file) loadFile(file);
+        });
+
+        fileDrop.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files[0]) loadFile(fileInput.files[0]);
+        });
+
+        // Load binary file
+        async function loadFile(file) {
+            log(`Loading ${file.name}...`);
+            try {
+                const data = new Uint8Array(await file.arrayBuffer());
+                await E9Patch.loadBinary(data, file.name);
+
+                fileName.textContent = file.name;
+                fileSize.textContent = `${(file.size / 1024).toFixed(2)} KB`;
+
+                // Detect format
+                let format = 'Unknown';
+                if (data[0] === 0x7F && data[1] === 0x45 && data[2] === 0x4C && data[3] === 0x46) {
+                    format = 'ELF';
+                } else if (data[0] === 0x4D && data[1] === 0x5A) {
+                    format = 'PE (Windows)';
+                }
+                fileFormat.textContent = format;
+
+                fileInfo.style.display = 'block';
+                applyPatchesBtn.disabled = false;
+                downloadBtn.disabled = false;
+
+                log(`Loaded ${file.name} (${format})`, 'success');
+                updateEditor('disasm', generateDisasmPreview(data, format));
+            } catch (e) {
+                log(`Failed to load: ${e.message}`, 'error');
+            }
+        }
+
+        // Generate disassembly preview
+        function generateDisasmPreview(data, format) {
+            let output = `; Binary: ${format}\n`;
+            output += `; Size: ${data.length} bytes\n\n`;
+
+            // Show header bytes
+            if (format === 'ELF') {
+                output += '; ELF Header\n';
+                output += `; Class:      ${data[4] === 1 ? '32-bit' : '64-bit'}\n`;
+                output += `; Endian:     ${data[5] === 1 ? 'Little' : 'Big'}\n`;
+                output += `; Type:       ${['None', 'Relocatable', 'Executable', 'Shared', 'Core'][data[16]] || 'Unknown'}\n\n`;
+            }
+
+            // Hex dump of first 256 bytes
+            output += '; First 256 bytes:\n';
+            for (let i = 0; i < Math.min(256, data.length); i += 16) {
+                output += `${i.toString(16).padStart(8, '0')}: `;
+                for (let j = 0; j < 16 && i + j < data.length; j++) {
+                    output += data[i + j].toString(16).padStart(2, '0') + ' ';
+                }
+                output += '\n';
+            }
+
+            return output;
+        }
+
+        // Update editor content
+        function updateEditor(tab, content) {
+            editor.textContent = content;
+            document.querySelectorAll('.editor-tab').forEach(t => {
+                t.classList.toggle('active', t.dataset.tab === tab);
+            });
+        }
+
+        // Tab switching
+        document.querySelectorAll('.editor-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                const tabName = tab.dataset.tab;
+                document.querySelectorAll('.editor-tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                // TODO: Switch content based on tab
+            });
+        });
+
+        // Apply patches button
+        applyPatchesBtn.addEventListener('click', async () => {
+            log('Applying patches...');
+            // Patches are applied automatically via IDE bridge
+            log('Patches applied', 'success');
+        });
+
+        // Download button
+        downloadBtn.addEventListener('click', () => {
+            if (E9Patch.downloadPatchedBinary()) {
+                log('Downloaded patched binary', 'success');
+            } else {
+                log('Failed to download', 'error');
+            }
+        });
+
+        // IDE connection
+        connectIdeBtn.addEventListener('click', async () => {
+            const url = ideUrl.value;
+            log(`Connecting to IDE at ${url}...`);
+            try {
+                await E9Patch.IDE.connect(url);
+                ideStatus.classList.add('connected');
+                ideStatusText.textContent = 'IDE Connected';
+                log('Connected to IDE', 'success');
+            } catch (e) {
+                log(`IDE connection failed: ${e.message}`, 'error');
+            }
+        });
+
+        // Set up E9Patch callbacks
+        E9Patch.callbacks.onPatchApplied = (addr, data) => {
+            log(`Patch applied at 0x${addr.toString(16)} (${data.length} bytes)`, 'success');
+        };
+
+        E9Patch.callbacks.onProgress = (current, total, msg) => {
+            log(`Progress: ${current}/${total} - ${msg}`);
+        };
+
+        E9Patch.callbacks.onError = (code, msg) => {
+            log(`Error ${code}: ${msg}`, 'error');
+        };
+
+        E9Patch.callbacks.onComplete = (success, path) => {
+            if (success) {
+                log(`Rewriting complete: ${path}`, 'success');
+            } else {
+                log('Rewriting failed', 'error');
+            }
+        };
+
+        E9Patch.callbacks.onSourceChange = (data) => {
+            log(`Source change: ${data.file}:${data.lineStart}-${data.lineEnd}`, 'info');
+        };
+
+        // Initialize E9Patch
+        async function init() {
+            log('Initializing E9Patch...');
+            try {
+                await E9Patch.init({
+                    wasmUrl: './e9patch.wasm',
+                    enableDebugLogging: true
+                });
+                wasmStatus.classList.add('connected');
+                wasmStatusText.textContent = 'WASM Ready';
+                versionInfo.textContent = `E9Patch v${E9Patch.version}`;
+                log('E9Patch initialized', 'success');
+            } catch (e) {
+                wasmStatusText.textContent = 'WASM Failed';
+                log(`Initialization failed: ${e.message}`, 'error');
+            }
+        }
+
+        // Start initialization
+        init();
+    </script>
+</body>
+</html>

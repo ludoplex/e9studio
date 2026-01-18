@@ -1,0 +1,16 @@
+[
+    {
+        "keys": ["ctrl+shift+r"],
+        "command": "e9patch_hot_reload",
+        "context": [
+            { "key": "selector", "operator": "equal", "operand": "source.c, source.c++, source.objc, source.objc++" }
+        ]
+    },
+    {
+        "keys": ["ctrl+shift+b"],
+        "command": "e9patch_toggle_breakpoint",
+        "context": [
+            { "key": "selector", "operator": "equal", "operand": "source.c, source.c++, source.objc, source.objc++" }
+        ]
+    }
+]

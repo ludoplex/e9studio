@@ -1,0 +1,30 @@
+[
+    {
+        "caption": "E9Patch: Connect",
+        "command": "e9patch_connect"
+    },
+    {
+        "caption": "E9Patch: Disconnect",
+        "command": "e9patch_disconnect"
+    },
+    {
+        "caption": "E9Patch: Toggle Breakpoint",
+        "command": "e9patch_toggle_breakpoint"
+    },
+    {
+        "caption": "E9Patch: Clear All Breakpoints",
+        "command": "e9patch_clear_breakpoints"
+    },
+    {
+        "caption": "E9Patch: Hot Reload",
+        "command": "e9patch_hot_reload"
+    },
+    {
+        "caption": "E9Patch: Show Status",
+        "command": "e9patch_status"
+    },
+    {
+        "caption": "E9Patch: Open Browser Debugger",
+        "command": "e9patch_open_browser"
+    }
+]

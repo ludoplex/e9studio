@@ -1,0 +1,142 @@
+name: Build E9Studio
+
+on:
+  push:
+    branches: [ main, master, 'claude/*' ]
+    paths:
+      - 'src/e9patch/**'
+      - 'Makefile.e9studio'
+      - '.github/workflows/build-e9studio.yml'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+  release:
+    types: [ created ]
+
+jobs:
+  # Primary build: Cross-platform APE using cosmocc
+  build-ape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download cosmocc
+        run: |
+          curl -fsSL https://cosmo.zip/pub/cosmocc/cosmocc.zip -o /tmp/cosmocc.zip
+          mkdir -p /opt/cosmo
+          cd /opt/cosmo && unzip -q /tmp/cosmocc.zip
+          # Debug: show structure
+          ls -la /opt/cosmo/bin/ | head -5
+          /opt/cosmo/bin/cosmocc --version
+
+      - name: Build e9studio (APE)
+        run: |
+          make -f Makefile.e9studio CC=/opt/cosmo/bin/cosmocc AR=/opt/cosmo/bin/cosmoar all
+
+      - name: Run vendor library tests
+        run: |
+          make -f Makefile.e9studio CC=/opt/cosmo/bin/cosmocc AR=/opt/cosmo/bin/cosmoar test
+
+      - name: Create embedded resources
+        run: |
+          mkdir -p .cosmo
+          echo "E9Studio - Actually Portable Executable" > .cosmo/README
+          echo "1.0.0" > .cosmo/VERSION
+          echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > .cosmo/BUILD_TIME
+          echo "linux,macos,windows,freebsd,openbsd,netbsd" > .cosmo/PLATFORMS
+          zip -r resources.zip .cosmo/
+
+      - name: Create e9studio APE with embedded ZipOS
+        run: |
+          cp build/e9studio.com build/e9studio.com.bak
+          cat resources.zip >> build/e9studio.com
+          chmod +x build/e9studio.com
+
+      - name: Verify APE on Linux
+        run: |
+          ./build/e9studio.com --self-test
+          echo "Linux x86_64 test: PASSED"
+
+      - name: Upload APE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: e9studio-ape
+          path: build/e9studio.com
+
+  # Test APE on macOS (Intel)
+  test-macos-intel:
+    needs: build-ape
+    runs-on: macos-15
+    steps:
+      - name: Download APE artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: e9studio-ape
+
+      - name: Test APE on macOS Intel
+        run: |
+          chmod +x e9studio.com
+          ./e9studio.com --self-test
+          echo "macOS Intel (x86_64) test: PASSED"
+
+  # Test APE on macOS (Apple Silicon)
+  test-macos-arm:
+    needs: build-ape
+    runs-on: macos-latest
+    steps:
+      - name: Download APE artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: e9studio-ape
+
+      - name: Test APE on macOS ARM
+        run: |
+          chmod +x e9studio.com
+          ./e9studio.com --self-test
+          echo "macOS Apple Silicon (arm64) test: PASSED"
+
+  # Native Linux build for fast CI testing
+  test-native-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential zip
+
+      - name: Build and test (native gcc)
+        run: |
+          make -f Makefile.e9studio CC=gcc AR=ar all
+          make -f Makefile.e9studio CC=gcc AR=ar test
+
+      - name: Create embedded resources and verify
+        run: |
+          mkdir -p .cosmo
+          echo "E9Studio Test Build" > .cosmo/README
+          echo "test" > .cosmo/VERSION
+          zip -r resources.zip .cosmo/
+          cat resources.zip >> build/e9studio.com
+          ./build/e9studio.com --self-test
+          echo "Native Linux build test: PASSED"
+
+  # Release job - only uploads APE (it's cross-platform)
+  release:
+    needs: [build-ape, test-macos-intel, test-macos-arm]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    steps:
+      - name: Download APE artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: e9studio-ape
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v1
+        with:
+          files: e9studio.com
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

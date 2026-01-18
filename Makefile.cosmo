@@ -1,0 +1,343 @@
+#########################################################################
+# Makefile.cosmo
+# Build e9patch with Cosmopolitan Libc for portable execution
+#
+# Usage:
+#   make -f Makefile.cosmo all        # Build APE binary
+#   make -f Makefile.cosmo wasm       # Build WASM module
+#   make -f Makefile.cosmo release    # Build optimized APE
+#   make -f Makefile.cosmo clean      # Clean build
+#
+# Requirements:
+#   - Cosmopolitan Libc (https://github.com/jart/cosmopolitan)
+#   - Set COSMO_PATH to cosmopolitan directory
+#
+# The resulting binary is an "Actually Portable Executable" (APE)
+# that runs on Linux, macOS, Windows, and BSD without modification.
+#########################################################################
+
+.PHONY: all wasm release debug clean install
+
+# Cosmopolitan path (can be overridden)
+COSMO_PATH ?= /opt/cosmo
+COSMO_AMALGAMATION ?= $(COSMO_PATH)/cosmopolitan.h
+
+# Check if Cosmopolitan is available
+ifeq ($(wildcard $(COSMO_AMALGAMATION)),)
+$(error Cosmopolitan not found at $(COSMO_PATH). Set COSMO_PATH or run: git clone https://github.com/jart/cosmopolitan)
+endif
+
+# Compiler settings for Cosmopolitan
+CC = gcc
+CXX = g++
+COSMO_CFLAGS = -static -nostdlib -nostdinc -fno-pie -no-pie \
+    -mno-red-zone -fno-omit-frame-pointer \
+    -include $(COSMO_AMALGAMATION) \
+    -D__COSMOPOLITAN__ -DE9_COSMO_ENABLED
+
+COSMO_CXXFLAGS = $(COSMO_CFLAGS) -std=c++11 -fno-exceptions -fno-rtti
+
+COSMO_LDFLAGS = -static -nostdlib -no-pie -fuse-ld=bfd \
+    -Wl,--gc-sections -Wl,-z,max-page-size=0x1000 \
+    -Wl,-T,$(COSMO_PATH)/ape.lds \
+    $(COSMO_PATH)/crt.o $(COSMO_PATH)/ape-no-modify-self.o \
+    $(COSMO_PATH)/cosmopolitan.a
+
+# Version
+VERSION := $(shell cat VERSION 2>/dev/null || echo "0.0.0")
+
+# Common flags
+COMMON_CXXFLAGS = -Wall -Wno-reorder -DVERSION=$(VERSION)
+
+# Platform abstraction layer sources
+PAL_SRCS = \
+    src/e9patch/platform/e9platform_native.cpp \
+    src/e9patch/platform/e9cosmo.cpp
+
+# IDE integration sources
+IDE_SRCS = \
+    src/e9patch/ide/clion_bridge.cpp
+
+# Analysis engine sources (wraps external tools: binwalk, polyfile, capstone, etc.)
+ANALYSIS_SRCS = \
+    src/e9patch/analysis/e9analysis.c \
+    src/e9patch/analysis/e9studio_analysis.c \
+    src/e9patch/analysis/e9polyglot.c \
+    src/e9patch/analysis/e9extern.c
+
+# External tool integration:
+# - binwalk   : pip install binwalk (signature scanning, extraction)
+# - polyfile  : pip install polyfile (polyglot detection)
+# - capstone  : apt install libcapstone-dev (disassembly)
+# - keystone  : (assembly)
+# - zlib/lzma/zstd : compression libraries
+#
+# Optional compile flags:
+# -DHAVE_CAPSTONE -lcapstone
+# -DHAVE_KEYSTONE -lkeystone
+# -DHAVE_ZLIB -lz
+# -DHAVE_LZMA -llzma
+# -DHAVE_ZSTD -lzstd
+
+# e9patch core sources (existing)
+E9PATCH_CORE_SRCS = \
+    src/e9patch/e9CFR.cpp \
+    src/e9patch/e9alloc.cpp \
+    src/e9patch/e9api.cpp \
+    src/e9patch/e9elf.cpp \
+    src/e9patch/e9emit.cpp \
+    src/e9patch/e9json.cpp \
+    src/e9patch/e9mapping.cpp \
+    src/e9patch/e9misc.cpp \
+    src/e9patch/e9optimize.cpp \
+    src/e9patch/e9patch.cpp \
+    src/e9patch/e9pe.cpp \
+    src/e9patch/e9tactics.cpp \
+    src/e9patch/e9trampoline.cpp \
+    src/e9patch/e9x86_64.cpp
+
+# All e9patch sources for APE build
+E9PATCH_SRCS = $(E9PATCH_CORE_SRCS) $(PAL_SRCS) $(IDE_SRCS)
+
+# Object files
+E9PATCH_OBJS = $(E9PATCH_SRCS:.cpp=.cosmo.o)
+
+# Output directory
+BUILD_DIR = build/cosmo
+
+#########################################################################
+# APE Build (Actually Portable Executable)
+#########################################################################
+
+all: $(BUILD_DIR)/e9patch.com
+
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
+
+# Generate loader files (needed before e9elf.o)
+src/e9patch/e9loader_elf.c: src/e9patch/e9loader_elf.cpp
+	$(CXX) -std=c++11 -Wall -fno-stack-protector -Wno-unused-function -fPIC \
+		-Os -c $< -o e9loader_elf.o
+	$(CXX) -pie -nostdlib -o e9loader_elf.bin e9loader_elf.o -T e9loader.ld
+	xxd -i e9loader_elf.bin > $@
+
+src/e9patch/e9loader_pe.c: src/e9patch/e9loader_pe.cpp
+	$(CXX) -std=c++11 -Wall -fno-stack-protector -fno-zero-initialized-in-bss \
+		-Wno-unused-function -fPIC -mabi=ms -fshort-wchar -Os -c $< -o e9loader_pe.o
+	$(CXX) -pie -nostdlib -o e9loader_pe.bin e9loader_pe.o -T e9loader.ld
+	xxd -i e9loader_pe.bin > $@
+
+# Ensure loader files exist before e9elf.o and e9pe.o
+src/e9patch/e9elf.cosmo.o: src/e9patch/e9loader_elf.c
+src/e9patch/e9pe.cosmo.o: src/e9patch/e9loader_pe.c
+
+# Compile C++ sources with Cosmopolitan
+%.cosmo.o: %.cpp | $(BUILD_DIR)
+	$(CXX) $(COSMO_CXXFLAGS) $(COMMON_CXXFLAGS) -c $< -o $@
+
+# Link APE binary
+$(BUILD_DIR)/e9patch.com: $(E9PATCH_OBJS) | $(BUILD_DIR)
+	$(CXX) $(COSMO_CXXFLAGS) $(E9PATCH_OBJS) -o $@ $(COSMO_LDFLAGS)
+	@echo "Built APE binary: $@"
+	@echo "This binary runs on Linux, macOS, Windows, FreeBSD, OpenBSD, NetBSD"
+
+#########################################################################
+# WASM Build (for browser/Chrome)
+#########################################################################
+
+# Emscripten settings
+EMCC ?= emcc
+EMCXX ?= em++
+WASM_CXXFLAGS = -std=c++11 -Wall -Wno-reorder \
+    -DVERSION=$(VERSION) -DE9_PLATFORM_WASM \
+    -O2 -s WASM=1 -s MODULARIZE=1 \
+    -s EXPORT_NAME='E9PatchModule' \
+    -s EXPORTED_FUNCTIONS='["_e9cosmo_init","_e9cosmo_load_binary","_e9cosmo_apply_patch","_e9cosmo_get_patched_binary","_e9cosmo_free_patched_binary","_e9cosmo_on_source_change","_e9cosmo_set_breakpoint","_e9cosmo_clear_breakpoint","_e9cosmo_hot_reload","_e9cosmo_get_version","_malloc","_free"]' \
+    -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","UTF8ToString","stringToUTF8"]' \
+    -s ALLOW_MEMORY_GROWTH=1 \
+    -s INITIAL_MEMORY=67108864
+
+# WASM sources (subset for browser)
+WASM_SRCS = \
+    src/e9patch/platform/e9platform_wasm.cpp \
+    src/e9patch/platform/e9cosmo.cpp \
+    src/e9patch/e9alloc.cpp \
+    src/e9patch/e9json.cpp \
+    src/e9patch/e9x86_64.cpp \
+    src/e9patch/e9trampoline.cpp \
+    src/e9patch/e9tactics.cpp
+
+wasm: $(BUILD_DIR)/e9patch.wasm $(BUILD_DIR)/e9patch_chrome.js
+
+$(BUILD_DIR)/e9patch.wasm: $(WASM_SRCS) | $(BUILD_DIR)
+	$(EMCXX) $(WASM_CXXFLAGS) $(WASM_SRCS) -o $(BUILD_DIR)/e9patch.js
+	@echo "Built WASM module: $@"
+
+$(BUILD_DIR)/e9patch_chrome.js: src/e9patch/web/e9patch_chrome.js | $(BUILD_DIR)
+	cp $< $@
+
+#########################################################################
+# wasm3 Integration Build (Cosmopolitan + embedded wasm3)
+#########################################################################
+
+# wasm3 settings
+WASM3_PATH ?= $(COSMO_PATH)/third_party/wasm3
+WASM3_CFLAGS = -DE9_WASM3_ENABLED -I$(WASM3_PATH)/source
+
+wasm3-host: COSMO_CXXFLAGS += $(WASM3_CFLAGS)
+wasm3-host: $(BUILD_DIR)/e9patch-wasm3.com
+
+$(BUILD_DIR)/e9patch-wasm3.com: $(E9PATCH_OBJS) | $(BUILD_DIR)
+	$(CXX) $(COSMO_CXXFLAGS) $(E9PATCH_OBJS) -o $@ $(COSMO_LDFLAGS) \
+		$(WASM3_PATH)/build/libm3.a
+	@echo "Built APE with embedded wasm3: $@"
+
+#########################################################################
+# E9Studio - Self-contained binary rewriting environment
+#########################################################################
+
+# E9Studio sources (C for simpler Cosmopolitan build)
+E9STUDIO_SRCS = \
+    src/e9patch/wasm/e9wasm_host.c \
+    src/e9patch/wasm/e9studio.c \
+    src/e9patch/analysis/e9analysis.c \
+    src/e9patch/analysis/e9studio_analysis.c
+
+E9STUDIO_OBJS = $(E9STUDIO_SRCS:.c=.cosmo.o)
+
+# Compile C sources with Cosmopolitan
+%.cosmo.o: %.c | $(BUILD_DIR)
+	$(CC) $(COSMO_CFLAGS) -Wall -c $< -o $@
+
+# E9Studio without wasm3 (native only mode)
+studio: $(BUILD_DIR)/e9studio.com
+
+$(BUILD_DIR)/e9studio.com: $(E9STUDIO_OBJS) | $(BUILD_DIR)
+	$(CC) $(COSMO_CFLAGS) $(E9STUDIO_OBJS) -o $@ $(COSMO_LDFLAGS)
+	@echo "Built E9Studio: $@"
+	@echo "Self-contained binary rewriting environment - no browser needed"
+
+# E9Studio with wasm3 (full WASM support)
+studio-wasm3: COSMO_CFLAGS += $(WASM3_CFLAGS)
+studio-wasm3: $(BUILD_DIR)/e9studio-wasm3.com
+
+$(BUILD_DIR)/e9studio-wasm3.com: $(E9STUDIO_OBJS) | $(BUILD_DIR)
+	$(CC) $(COSMO_CFLAGS) $(E9STUDIO_OBJS) -o $@ $(COSMO_LDFLAGS) \
+		$(WASM3_PATH)/build/libm3.a
+	@echo "Built E9Studio with wasm3: $@"
+
+# Bundle WASM modules into ZipOS
+studio-bundle: studio-wasm3 wasm
+	@echo "Bundling WASM modules into E9Studio..."
+	cp $(BUILD_DIR)/e9studio-wasm3.com $(BUILD_DIR)/e9studio-bundle.com
+	zip -j $(BUILD_DIR)/e9studio-bundle.com $(BUILD_DIR)/e9patch.wasm
+	@echo "Built bundled E9Studio: $(BUILD_DIR)/e9studio-bundle.com"
+	@echo "Contains: e9patch.wasm in ZipOS"
+
+#########################################################################
+# Release and Debug Builds
+#########################################################################
+
+release: COMMON_CXXFLAGS += -O2 -DNDEBUG
+release: all
+	strip $(BUILD_DIR)/e9patch.com || true
+
+debug: COMMON_CXXFLAGS += -O0 -g -DDEBUG
+debug: all
+
+#########################################################################
+# Installation
+#########################################################################
+
+PREFIX ?= /usr/local
+
+install: all
+	install -d "$(DESTDIR)$(PREFIX)/bin"
+	install -m 755 $(BUILD_DIR)/e9patch.com "$(DESTDIR)$(PREFIX)/bin/e9patch"
+	@echo "Installed to $(DESTDIR)$(PREFIX)/bin/e9patch"
+
+#########################################################################
+# Clean
+#########################################################################
+
+clean:
+	rm -rf $(BUILD_DIR)
+	rm -f $(E9PATCH_OBJS)
+	rm -f src/e9patch/e9loader_elf.c src/e9patch/e9loader_pe.c
+	rm -f e9loader_elf.o e9loader_elf.bin
+	rm -f e9loader_pe.o e9loader_pe.bin
+
+#########################################################################
+# Development helpers
+#########################################################################
+
+# Test APE on current platform
+test: $(BUILD_DIR)/e9patch.com
+	@echo "Testing APE binary..."
+	$(BUILD_DIR)/e9patch.com --version
+
+# Test with file system watch (for IDE integration)
+test-ide: $(BUILD_DIR)/e9patch.com
+	@echo "Starting e9patch with IDE bridge on port 9229..."
+	$(BUILD_DIR)/e9patch.com --ide-port=9229
+
+# Generate compile_commands.json for IDE
+compile_commands:
+	@echo '[' > compile_commands.json
+	@for f in $(E9PATCH_SRCS); do \
+		echo '{"directory":"$(PWD)","file":"'$$f'","command":"$(CXX) $(COSMO_CXXFLAGS) $(COMMON_CXXFLAGS) -c '$$f'"},' >> compile_commands.json; \
+	done
+	@echo ']' >> compile_commands.json
+	@echo "Generated compile_commands.json"
+
+#########################################################################
+# Help
+#########################################################################
+
+help:
+	@echo "E9Patch Cosmopolitan Build System"
+	@echo ""
+	@echo "Targets:"
+	@echo "  all           - Build APE binary (runs on any OS)"
+	@echo "  wasm          - Build WASM module (for browser)"
+	@echo "  wasm3-host    - Build APE with embedded wasm3 interpreter"
+	@echo "  studio        - Build E9Studio (self-contained, no browser)"
+	@echo "  studio-wasm3  - Build E9Studio with wasm3 support"
+	@echo "  studio-bundle - Build E9Studio with WASM modules in ZipOS"
+	@echo "  release       - Build optimized APE"
+	@echo "  debug         - Build debug APE"
+	@echo "  install       - Install to PREFIX"
+	@echo "  clean         - Remove build artifacts"
+	@echo "  test          - Test built binary"
+	@echo "  test-ide      - Test with IDE integration"
+	@echo ""
+	@echo "E9Studio (replaces Chrome/browser):"
+	@echo "  Self-contained binary rewriting environment"
+	@echo "  - Embedded wasm3 interpreter"
+	@echo "  - Direct ZipOS access (zero-copy mmap)"
+	@echo "  - Terminal UI for interactive editing"
+	@echo "  - File watcher for hot-reload"
+	@echo "  - Self-modifying APE (save patches to own ZipOS)"
+	@echo ""
+	@echo "Analysis Engine (Ghidra-like capabilities):"
+	@echo "  - Multi-arch disassembly (x86-64, AArch64)"
+	@echo "  - Automatic symbol detection and injection"
+	@echo "  - Control Flow Graph (CFG) generation"
+	@echo "  - DWARF debug info parsing"
+	@echo "  - Decompilation to pseudo-C code"
+	@echo "  - Source-to-binary mapping"
+	@echo "  - Live patching from source changes"
+	@echo ""
+	@echo "Variables:"
+	@echo "  COSMO_PATH   - Path to Cosmopolitan (default: /opt/cosmo)"
+	@echo "  WASM3_PATH   - Path to wasm3 (default: COSMO_PATH/third_party/wasm3)"
+	@echo "  PREFIX       - Install prefix (default: /usr/local)"
+	@echo ""
+	@echo "Requirements:"
+	@echo "  1. Clone Cosmopolitan: git clone https://github.com/jart/cosmopolitan"
+	@echo "  2. Build Cosmopolitan: cd cosmopolitan && make"
+	@echo "  3. Set COSMO_PATH=/path/to/cosmopolitan"
+	@echo ""
+	@echo "For WASM build:"
+	@echo "  1. Install Emscripten: https://emscripten.org/"
+	@echo "  2. make -f Makefile.cosmo wasm"

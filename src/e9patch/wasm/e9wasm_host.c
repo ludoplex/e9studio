@@ -403,33 +403,31 @@ int e9wasm_init(const E9WasmConfig *config) {
     /* Get executable path - try multiple methods for portability */
     g_runtime.exe_path[0] = '\0';
     {
-        ssize_t len = -1;
-
-        #if defined(__COSMOPOLITAN__) || defined(__linux__)
-        /* Cosmopolitan emulates /proc/self/exe on all platforms */
-        len = readlink("/proc/self/exe", g_runtime.exe_path,
-                       sizeof(g_runtime.exe_path) - 1);
+        #if defined(__COSMOPOLITAN__)
+        /* Cosmopolitan: use GetProgramExecutableName() from runtime.h */
+        extern char *GetProgramExecutableName(void);
+        char *exe = GetProgramExecutableName();
+        if (exe && exe[0]) {
+            strncpy(g_runtime.exe_path, exe, sizeof(g_runtime.exe_path) - 1);
+            g_runtime.exe_path[sizeof(g_runtime.exe_path) - 1] = '\0';
+        }
+        #elif defined(__linux__)
+        ssize_t len = readlink("/proc/self/exe", g_runtime.exe_path,
+                               sizeof(g_runtime.exe_path) - 1);
+        if (len > 0) g_runtime.exe_path[len] = '\0';
         #elif defined(__APPLE__)
         uint32_t size = sizeof(g_runtime.exe_path);
-        if (_NSGetExecutablePath(g_runtime.exe_path, &size) == 0) {
-            len = strlen(g_runtime.exe_path);
-        }
+        _NSGetExecutablePath(g_runtime.exe_path, &size);
         #elif defined(__FreeBSD__)
-        len = readlink("/proc/curproc/file", g_runtime.exe_path,
-                       sizeof(g_runtime.exe_path) - 1);
+        ssize_t len = readlink("/proc/curproc/file", g_runtime.exe_path,
+                               sizeof(g_runtime.exe_path) - 1);
+        if (len > 0) g_runtime.exe_path[len] = '\0';
+        #else
+        /* Fallback: try /proc/self/exe */
+        ssize_t len = readlink("/proc/self/exe", g_runtime.exe_path,
+                               sizeof(g_runtime.exe_path) - 1);
+        if (len > 0) g_runtime.exe_path[len] = '\0';
         #endif
-
-        /* Fallback: try /proc/self/exe anyway */
-        if (len < 0) {
-            len = readlink("/proc/self/exe", g_runtime.exe_path,
-                           sizeof(g_runtime.exe_path) - 1);
-        }
-
-        if (len > 0) {
-            g_runtime.exe_path[len] = '\0';
-        } else {
-            g_runtime.exe_path[0] = '\0';
-        }
     }
 
 #ifdef E9_WASM3_ENABLED

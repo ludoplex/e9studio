@@ -1,0 +1,127 @@
+name: Build E9Studio
+
+on:
+  push:
+    branches: [ main, master, 'claude/*' ]
+    paths:
+      - 'src/e9patch/**'
+      - 'Makefile.e9studio'
+      - '.github/workflows/build-e9studio.yml'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+  release:
+    types: [ created ]
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential zip
+
+      - name: Build e9studio (native)
+        run: |
+          make -f Makefile.e9studio CC=gcc AR=ar all
+
+      - name: Run tests
+        run: |
+          make -f Makefile.e9studio CC=gcc AR=ar test
+
+      - name: Create embedded resources
+        run: |
+          mkdir -p .cosmo
+          echo "E9Studio - Binary Analysis & Patching Tool" > .cosmo/README
+          echo "1.0.0" > .cosmo/VERSION
+          echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > .cosmo/BUILD_TIME
+          zip -r resources.zip .cosmo/
+
+      - name: Create e9studio with embedded ZipOS
+        run: |
+          cp build/e9studio.com build/e9studio-linux-x86_64.com
+          cat resources.zip >> build/e9studio-linux-x86_64.com
+          chmod +x build/e9studio-linux-x86_64.com
+
+      - name: Verify embedded ZipOS
+        run: |
+          ./build/e9studio-linux-x86_64.com --self-test
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: e9studio-linux-x86_64
+          path: |
+            build/e9studio-linux-x86_64.com
+            build/libe9vendor.a
+
+  build-cosmocc:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download cosmocc
+        run: |
+          mkdir -p /opt/cosmo
+          curl -fsSL https://cosmo.zip/pub/cosmocc/cosmocc.zip -o /tmp/cosmocc.zip
+          unzip -q /tmp/cosmocc.zip -d /opt/cosmo
+
+      - name: Build e9studio (APE)
+        run: |
+          export PATH="/opt/cosmo/bin:$PATH"
+          make -f Makefile.e9studio CC=cosmocc AR=cosmoar all
+
+      - name: Create embedded resources
+        run: |
+          mkdir -p .cosmo
+          echo "E9Studio - Actually Portable Executable" > .cosmo/README
+          echo "1.0.0" > .cosmo/VERSION
+          echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > .cosmo/BUILD_TIME
+          zip -r resources.zip .cosmo/
+
+      - name: Create e9studio APE with embedded ZipOS
+        run: |
+          cp build/e9studio.com build/e9studio-ape.com
+          cat resources.zip >> build/e9studio-ape.com
+          chmod +x build/e9studio-ape.com
+
+      - name: Verify APE
+        run: |
+          ./build/e9studio-ape.com --self-test
+
+      - name: Upload APE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: e9studio-ape
+          path: build/e9studio-ape.com
+
+  release:
+    needs: [build-linux, build-cosmocc]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    steps:
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: e9studio-linux-x86_64
+          path: artifacts/linux
+
+      - name: Download APE artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: e9studio-ape
+          path: artifacts/ape
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/linux/e9studio-linux-x86_64.com
+            artifacts/ape/e9studio-ape.com
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

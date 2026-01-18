@@ -50,11 +50,12 @@ VENDOR_SRCS = \
     src/e9patch/vendor/e9disasm_arm64.c \
     src/e9patch/vendor/e9vendor.c
 
-# Analysis engine sources (CFG, symbol injection, decompilation)
+# Analysis engine sources (CFG, symbol injection, decompilation, patching)
 ANALYSIS_SRCS = \
     src/e9patch/analysis/e9analysis.c \
     src/e9patch/analysis/e9func_sigs.c \
     src/e9patch/analysis/e9decompile.c \
+    src/e9patch/analysis/e9binpatch.c \
     src/e9patch/analysis/e9studio_analysis.c
 
 # WAMR sources (WebAssembly Micro Runtime with Fast JIT)

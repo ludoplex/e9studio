@@ -9,6 +9,9 @@
  * License: GPLv3+
  */
 
+/* Central config must be included first for feature test macros */
+#include "e9studio_config.h"
+
 #include "e9wasm_host.h"
 
 #include <stdio.h>
@@ -705,13 +708,25 @@ int e9wasm_zipos_append(const char *name, const uint8_t *data, size_t size) {
     header[28] = 0; header[29] = 0;
 
     /* Write header */
-    write(fd, header, sizeof(header));
+    if (write(fd, header, sizeof(header)) != (ssize_t)sizeof(header)) {
+        close(fd);
+        wasm_log("Failed to write ZIP header: %s", strerror(errno));
+        return -1;
+    }
 
     /* Write filename */
-    write(fd, name, name_len);
+    if (write(fd, name, name_len) != (ssize_t)name_len) {
+        close(fd);
+        wasm_log("Failed to write ZIP filename: %s", strerror(errno));
+        return -1;
+    }
 
     /* Write data */
-    write(fd, data, size);
+    if (write(fd, data, size) != (ssize_t)size) {
+        close(fd);
+        wasm_log("Failed to write ZIP data: %s", strerror(errno));
+        return -1;
+    }
 
     /* TODO: Update central directory and EOCD */
     /* This is a simplified implementation - full impl needs to:

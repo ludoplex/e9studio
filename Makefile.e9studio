@@ -28,6 +28,7 @@ endif
 
 # Flags
 CFLAGS = -O2 -Wall -Wextra -std=c11
+CFLAGS += -I src/e9patch
 CFLAGS += -I src/e9patch/vendor
 CFLAGS += -I src/e9patch/wasm
 CFLAGS += -I src/e9patch/analysis

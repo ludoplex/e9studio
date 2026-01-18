@@ -202,8 +202,16 @@ int e9_a64_disasm_one(E9A64Disasm *ctx, const uint8_t *code, size_t size,
             insn->operands[2].imm = shift ? (imm12 << 12) : imm12;
         }
     }
-    /* Move wide immediate */
-    else if ((op0 & 0x71) == 0x12) {
+    /*
+     * Move wide immediate (MOVN/MOVZ/MOVK)
+     *
+     * ARM64 encoding: sf | opc[1:0] | 100101 | hw[1:0] | imm16 | Rd
+     *                 31   30-29     28-23    22-21     20-5    4-0
+     *
+     * op0 = bits 28-23 = 100101 (0x25)
+     * Mask 0x3F (6 bits) extracts the op0 field for comparison.
+     */
+    else if ((op0 & 0x3F) == 0x25) {
         bool is_64bit = BIT(enc, 31);
         uint32_t opc = BITS(enc, 30, 29);
         uint32_t hw = BITS(enc, 22, 21);
@@ -222,8 +230,16 @@ int e9_a64_disasm_one(E9A64Disasm *ctx, const uint8_t *code, size_t size,
         insn->operands[1].type = E9_A64_OP_IMM;
         insn->operands[1].imm = (uint64_t)imm16 << (hw * 16);
     }
-    /* Logical immediate */
-    else if ((op0 & 0x71) == 0x12 && BITS(enc, 25, 23) == 4) {
+    /*
+     * Logical immediate (AND/ORR/EOR/ANDS with immediate)
+     *
+     * ARM64 encoding: sf | opc[1:0] | 100100 | N | immr | imms | Rn | Rd
+     *                 31   30-29     28-23    22  21-16  15-10  9-5  4-0
+     *
+     * op0 = bits 28-23 = 100100 (0x24)
+     * Mask 0x3F (6 bits) extracts the op0 field for comparison.
+     */
+    else if ((op0 & 0x3F) == 0x24) {
         /* Simplified - just show raw encoding */
         strcpy(insn->mnemonic, "logic_imm");
         insn->category = E9_A64_CAT_DATA_PROC;
@@ -366,9 +382,21 @@ int e9_a64_disasm_one(E9A64Disasm *ctx, const uint8_t *code, size_t size,
             insn->operands[1].mem.offset = offset;
             insn->operands[1].size = 1 << size;
         }
-        /* Load/store register pair */
+        /*
+         * Load/store register pair (LDP/STP)
+         *
+         * ARM64 encoding: opc | 1 | 0 | 1 | opc2 | L | imm7 | Rt2 | Rn | Rt
+         *                 31-30 29  28  27  26-23  22  21-15  14-10 9-5  4-0
+         *
+         * bits 29-27 = 101 (5) identifies load/store pair instructions
+         * opc2 (bits 26-23) distinguishes addressing modes:
+         *   00x0 = no-allocate pair (STNP/LDNP)
+         *   00x1 = post-index
+         *   01x0 = signed offset
+         *   01x1 = pre-index
+         * L (bit 22): 0=store, 1=load
+         */
         else if (BITS(enc, 29, 27) == 5) {
-            uint32_t opc2 = BITS(enc, 23, 22);
             bool is_load = BIT(enc, 22);
             int64_t imm7 = sign_extend(BITS(enc, 21, 15), 7);
             uint32_t rt2 = BITS(enc, 14, 10);
@@ -452,8 +480,16 @@ int e9_a64_disasm_one(E9A64Disasm *ctx, const uint8_t *code, size_t size,
                 insn->operands[2].shifted.amount = imm6;
             }
         }
-        /* Add/sub shifted register */
-        else if ((BITS(enc, 28, 24) & 0x1E) == 0x0B) {
+        /*
+         * Add/sub shifted register (ADD/SUB/ADDS/SUBS with shifted reg)
+         *
+         * ARM64 encoding: sf | op | S | 01011 | shift | 0 | Rm | imm6 | Rn | Rd
+         *                 31   30  29  28-24   23-22  21  20-16 15-10  9-5  4-0
+         *
+         * bits 28-24 = 01011 (0x0B)
+         * Mask 0x1F (5 bits) extracts the opcode field for comparison.
+         */
+        else if ((BITS(enc, 28, 24) & 0x1F) == 0x0B) {
             bool is_sub = BIT(enc, 30);
 
             /* CMP alias */
@@ -708,8 +744,26 @@ bool e9_a64_is_prologue(const uint8_t *code, size_t size)
 
     uint32_t insn = read_insn(code);
 
-    /* STP x29, x30, [sp, #-...] - common prologue */
-    if ((insn & 0xFFC003E0) == 0xA9807BFD) {
+    /*
+     * STP x29, x30, [sp, #offset]! - common prologue pattern
+     *
+     * ARM64 STP (pre-index) encoding:
+     *   opc | 1 | 0 | 1 | 0 | 0 | 1 | 1 | imm7  | Rt2   | Rn    | Rt
+     *   31-30 29  28  27  26  25  24  23  22-15  14-10   9-5     4-0
+     *
+     * For prologue: opc=10 (64-bit), Rt2=x29(11101), Rn=sp(11111), Rt=x30(11110)
+     *
+     * Expected value: 10 1 0 1 0 0 1 1 ??????? 11101 11111 11110
+     *                 = 0xA9 0x?? 0x7B 0xFD (with imm7 varying)
+     *
+     * Mask 0xFFC07FFF: masks out imm7 (bits 21-15) to allow any offset
+     *   0xFFC07FFF = 1111 1111 1100 0000 0111 1111 1111 1111
+     *                ^^^^ ^^^^ ^^        ^^^^ ^^^^ ^^^^ ^^^^
+     *                opc+op    (skip)    Rt2  Rn   Rt
+     *
+     * Match 0xA9007BFD: STP with x29,x30,[sp,#offset]
+     */
+    if ((insn & 0xFFC07FFF) == 0xA9007BFD) {
         return true;
     }
 

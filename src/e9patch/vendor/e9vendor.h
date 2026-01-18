@@ -118,7 +118,7 @@ typedef struct {
     uint64_t address;
     uint8_t length;
     uint8_t bytes[16];
-    char mnemonic[16];
+    char mnemonic[24];
     char text[80];
 
     bool is_branch;

@@ -202,8 +202,8 @@ int e9_a64_disasm_one(E9A64Disasm *ctx, const uint8_t *code, size_t size,
             insn->operands[2].imm = shift ? (imm12 << 12) : imm12;
         }
     }
-    /* Move wide immediate */
-    else if ((op0 & 0x71) == 0x12) {
+    /* Move wide immediate: op0 = x100101 */
+    else if ((op0 & 0x3F) == 0x25) {
         bool is_64bit = BIT(enc, 31);
         uint32_t opc = BITS(enc, 30, 29);
         uint32_t hw = BITS(enc, 22, 21);
@@ -222,8 +222,8 @@ int e9_a64_disasm_one(E9A64Disasm *ctx, const uint8_t *code, size_t size,
         insn->operands[1].type = E9_A64_OP_IMM;
         insn->operands[1].imm = (uint64_t)imm16 << (hw * 16);
     }
-    /* Logical immediate */
-    else if ((op0 & 0x71) == 0x12 && BITS(enc, 25, 23) == 4) {
+    /* Logical immediate: op0 = x100100 */
+    else if ((op0 & 0x3F) == 0x24) {
         /* Simplified - just show raw encoding */
         strcpy(insn->mnemonic, "logic_imm");
         insn->category = E9_A64_CAT_DATA_PROC;
@@ -368,7 +368,7 @@ int e9_a64_disasm_one(E9A64Disasm *ctx, const uint8_t *code, size_t size,
         }
         /* Load/store register pair */
         else if (BITS(enc, 29, 27) == 5) {
-            uint32_t opc2 = BITS(enc, 23, 22);
+            /* opc2 distinguishes pre/post-index vs signed offset - not yet used */
             bool is_load = BIT(enc, 22);
             int64_t imm7 = sign_extend(BITS(enc, 21, 15), 7);
             uint32_t rt2 = BITS(enc, 14, 10);
@@ -452,8 +452,8 @@ int e9_a64_disasm_one(E9A64Disasm *ctx, const uint8_t *code, size_t size,
                 insn->operands[2].shifted.amount = imm6;
             }
         }
-        /* Add/sub shifted register */
-        else if ((BITS(enc, 28, 24) & 0x1E) == 0x0B) {
+        /* Add/sub shifted register: bits 28-24 = x1011 */
+        else if ((BITS(enc, 28, 24) & 0x1F) == 0x0B) {
             bool is_sub = BIT(enc, 30);
 
             /* CMP alias */
@@ -708,8 +708,11 @@ bool e9_a64_is_prologue(const uint8_t *code, size_t size)
 
     uint32_t insn = read_insn(code);
 
-    /* STP x29, x30, [sp, #-...] - common prologue */
-    if ((insn & 0xFFC003E0) == 0xA9807BFD) {
+    /* STP x29, x30, [sp, #-...] - common prologue
+     * Encoding: opc=10, V=0, L=0, Rt2=x29, Rn=sp, Rt=x30
+     * Mask checks: bits 31-30, 29-27, Rt2 (14-10), Rn (9-5), Rt (4-0)
+     * Allows any imm7 offset (bits 21-15) */
+    if ((insn & 0xFFC07FFF) == 0xA9007BFD) {
         return true;
     }
 

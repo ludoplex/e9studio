@@ -21,6 +21,10 @@
  * License: GPLv3+
  */
 
+/* Feature test macros for POSIX functions */
+#define _GNU_SOURCE
+#define _DEFAULT_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -372,9 +376,13 @@ static void handle_input(void) {
 
                 int fd = open(outpath, O_WRONLY | O_CREAT | O_TRUNC, 0755);
                 if (fd >= 0) {
-                    write(fd, g_target_binary, g_target_size);
+                    ssize_t written = write(fd, g_target_binary, g_target_size);
                     close(fd);
-                    studio_log("Saved to %s", outpath);
+                    if (written == (ssize_t)g_target_size) {
+                        studio_log("Saved to %s", outpath);
+                    } else {
+                        studio_log("Write incomplete: %zd of %zu bytes", written, g_target_size);
+                    }
                 } else {
                     studio_log("Failed to save: %s", strerror(errno));
                 }

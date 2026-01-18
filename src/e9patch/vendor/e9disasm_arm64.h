@@ -206,7 +206,7 @@ typedef struct {
     uint32_t encoding;          /* Raw 32-bit encoding */
 
     /* Mnemonic */
-    char mnemonic[16];
+    char mnemonic[24];
 
     /* Category */
     E9A64Category category;

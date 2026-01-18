@@ -54,6 +54,7 @@ VENDOR_SRCS = \
 ANALYSIS_SRCS = \
     src/e9patch/analysis/e9analysis.c \
     src/e9patch/analysis/e9func_sigs.c \
+    src/e9patch/analysis/e9decompile.c \
     src/e9patch/analysis/e9studio_analysis.c
 
 # WAMR sources (WebAssembly Micro Runtime with Fast JIT)

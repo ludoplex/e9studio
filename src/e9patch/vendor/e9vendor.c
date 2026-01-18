@@ -6,6 +6,9 @@
  * License: GPLv3+
  */
 
+/* Central config for debug/truncation detection macros */
+#include "e9studio_config.h"
+
 #include "e9vendor.h"
 #include <stdlib.h>
 #include <string.h>
@@ -264,8 +267,8 @@ int e9_disasm_one(E9Disasm *dis, const uint8_t *code, size_t size,
             insn->address = x86_insn.address;
             insn->length = x86_insn.length;
             memcpy(insn->bytes, x86_insn.bytes, x86_insn.length);
-            snprintf(insn->mnemonic, sizeof(insn->mnemonic), "%s", x86_insn.mnemonic);
-            snprintf(insn->text, sizeof(insn->text), "%s", x86_insn.text);
+            E9_STRCPY_SAFE(insn->mnemonic, sizeof(insn->mnemonic), x86_insn.mnemonic);
+            E9_STRCPY_SAFE(insn->text, sizeof(insn->text), x86_insn.text);
             insn->is_branch = x86_insn.is_branch;
             insn->is_call = x86_insn.is_call;
             insn->is_ret = x86_insn.is_ret;
@@ -284,8 +287,8 @@ int e9_disasm_one(E9Disasm *dis, const uint8_t *code, size_t size,
             insn->address = a64_insn.address;
             insn->length = 4;
             memcpy(insn->bytes, &a64_insn.encoding, 4);
-            snprintf(insn->mnemonic, sizeof(insn->mnemonic), "%s", a64_insn.mnemonic);
-            snprintf(insn->text, sizeof(insn->text), "%s", a64_insn.text);
+            E9_STRCPY_SAFE(insn->mnemonic, sizeof(insn->mnemonic), a64_insn.mnemonic);
+            E9_STRCPY_SAFE(insn->text, sizeof(insn->text), a64_insn.text);
             insn->is_branch = a64_insn.is_branch;
             insn->is_call = a64_insn.is_call;
             insn->is_ret = a64_insn.is_ret;

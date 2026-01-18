@@ -21,9 +21,8 @@
  * License: GPLv3+
  */
 
-/* Feature test macros for POSIX functions */
-#define _GNU_SOURCE
-#define _DEFAULT_SOURCE
+/* Central config must be included first for feature test macros */
+#include "e9studio_config.h"
 
 #include <stdio.h>
 #include <stdlib.h>

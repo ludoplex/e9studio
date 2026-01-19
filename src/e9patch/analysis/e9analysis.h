@@ -400,9 +400,14 @@ struct E9Binary {
  */
 
 /*
- * Create binary analysis context
+ * Create binary analysis context from data in memory
  */
 E9Binary *e9_binary_create(const uint8_t *data, size_t size);
+
+/*
+ * Open binary from file path
+ */
+E9Binary *e9_binary_open(const char *path);
 
 /*
  * Free binary analysis context
@@ -426,9 +431,15 @@ int e9_binary_analyze(E9Binary *bin);
  */
 
 /*
- * Disassemble single instruction
+ * Disassemble single instruction (allocates)
  */
 E9Instruction *e9_disasm_one(E9Binary *bin, uint64_t addr);
+
+/*
+ * Disassemble single instruction into provided struct
+ * Returns 0 on success, -1 on error
+ */
+int e9_disasm(E9Binary *bin, uint64_t addr, E9Instruction *insn);
 
 /*
  * Disassemble range of addresses

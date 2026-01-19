@@ -224,6 +224,57 @@ void e9_binary_free(E9Binary *bin)
     free(bin);
 }
 
+E9Binary *e9_binary_open(const char *path)
+{
+    if (!path) return NULL;
+
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        fprintf(stderr, "e9analysis: cannot open '%s'\n", path);
+        return NULL;
+    }
+
+    /* Get file size */
+    fseek(fp, 0, SEEK_END);
+    long size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    if (size <= 0 || size > 1024 * 1024 * 1024) {  /* 1GB limit */
+        fprintf(stderr, "e9analysis: invalid file size\n");
+        fclose(fp);
+        return NULL;
+    }
+
+    /* Allocate buffer */
+    uint8_t *data = (uint8_t *)malloc((size_t)size);
+    if (!data) {
+        fprintf(stderr, "e9analysis: allocation failed\n");
+        fclose(fp);
+        return NULL;
+    }
+
+    /* Read file */
+    if (fread(data, 1, (size_t)size, fp) != (size_t)size) {
+        fprintf(stderr, "e9analysis: read error\n");
+        free(data);
+        fclose(fp);
+        return NULL;
+    }
+    fclose(fp);
+
+    /* Create binary context */
+    E9Binary *bin = e9_binary_create(data, (size_t)size);
+    if (!bin) {
+        free(data);
+        return NULL;
+    }
+
+    /* Auto-detect format */
+    e9_binary_detect(bin);
+
+    return bin;
+}
+
 /*
  * ============================================================================
  * Format and Architecture Detection
@@ -995,6 +1046,24 @@ E9Instruction *e9_disasm_range(E9Binary *bin, uint64_t start, uint64_t end)
     }
 
     return head;
+}
+
+int e9_disasm(E9Binary *bin, uint64_t addr, E9Instruction *insn)
+{
+    if (!bin || !insn) return -1;
+
+    E9Instruction *tmp = e9_disasm_one(bin, addr);
+    if (!tmp) return -1;
+
+    /* Copy to provided struct */
+    *insn = *tmp;
+    insn->next = NULL;  /* Don't copy linked list pointer */
+    insn->block = NULL;
+
+    /* Free the temporary allocation */
+    free(tmp);
+
+    return 0;
 }
 
 const char *e9_disasm_str(E9Binary *bin, E9Instruction *insn, char *buf, size_t bufsize)

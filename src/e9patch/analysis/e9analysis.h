@@ -432,8 +432,9 @@ int e9_binary_analyze(E9Binary *bin);
 
 /*
  * Disassemble single instruction (allocates)
+ * Note: Named differently from e9vendor's e9_disasm_one to avoid conflict
  */
-E9Instruction *e9_disasm_one(E9Binary *bin, uint64_t addr);
+E9Instruction *e9_disasm_instruction(E9Binary *bin, uint64_t addr);
 
 /*
  * Disassemble single instruction into provided struct

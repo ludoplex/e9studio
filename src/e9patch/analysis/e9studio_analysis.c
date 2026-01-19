@@ -295,7 +295,7 @@ const char *e9studio_get_disassembly(uint64_t addr, int num_lines, char *buf, si
     char line_buf[256];
 
     for (int i = 0; i < num_lines && pos < buf_size - 256; i++) {
-        E9Instruction *insn = e9_disasm_one(g_studio->binary, current);
+        E9Instruction *insn = e9_disasm_instruction(g_studio->binary, current);
         if (!insn) break;
 
         /* Check for symbol at this address */
@@ -799,7 +799,7 @@ const char *e9studio_quick_disasm(uint64_t addr, char *buf, size_t buf_size)
 {
     if (!g_studio || !g_studio->binary || !buf) return "";
 
-    E9Instruction *insn = e9_disasm_one(g_studio->binary, addr);
+    E9Instruction *insn = e9_disasm_instruction(g_studio->binary, addr);
     if (!insn) {
         snprintf(buf, buf_size, "???");
         return buf;

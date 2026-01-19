@@ -1008,7 +1008,7 @@ static E9Instruction *disasm_aarch64(E9Binary *bin, uint64_t addr)
  * ============================================================================
  */
 
-E9Instruction *e9_disasm_one(E9Binary *bin, uint64_t addr)
+E9Instruction *e9_disasm_instruction(E9Binary *bin, uint64_t addr)
 {
     if (!bin) return NULL;
 
@@ -1031,7 +1031,7 @@ E9Instruction *e9_disasm_range(E9Binary *bin, uint64_t start, uint64_t end)
     uint64_t addr = start;
 
     while (addr < end) {
-        E9Instruction *insn = e9_disasm_one(bin, addr);
+        E9Instruction *insn = e9_disasm_instruction(bin, addr);
         if (!insn) break;
 
         if (!head) {
@@ -1051,7 +1051,7 @@ int e9_disasm(E9Binary *bin, uint64_t addr, E9Instruction *insn)
 {
     if (!bin || !insn) return -1;
 
-    E9Instruction *tmp = e9_disasm_one(bin, addr);
+    E9Instruction *tmp = e9_disasm_instruction(bin, addr);
     if (!tmp) return -1;
 
     /* Copy to provided struct */
@@ -1403,7 +1403,7 @@ static int discover_functions_recursive(E9Binary *bin, uint64_t start)
     uint64_t max_addr = start + 0x10000;  /* Limit search */
 
     while (addr < max_addr) {
-        E9Instruction *insn = e9_disasm_one(bin, addr);
+        E9Instruction *insn = e9_disasm_instruction(bin, addr);
         if (!insn) break;
 
         if (insn->category == E9_INSN_RET) {
@@ -1594,7 +1594,7 @@ E9CFG *e9_cfg_build(E9Binary *bin, E9Function *func)
     uint64_t end_addr = func->end_address ? func->end_address : (func->address + 0x10000);
 
     while (addr < end_addr && num_leaders < max_blocks - 2) {
-        E9Instruction *insn = e9_disasm_one(bin, addr);
+        E9Instruction *insn = e9_disasm_instruction(bin, addr);
         if (!insn) break;
 
         if (insn->category == E9_INSN_CALL ||
@@ -1672,7 +1672,7 @@ E9CFG *e9_cfg_build(E9Binary *bin, E9Function *func)
         /* Disassemble block */
         addr = block->start_addr;
         while (addr < block->end_addr) {
-            E9Instruction *insn = e9_disasm_one(bin, addr);
+            E9Instruction *insn = e9_disasm_instruction(bin, addr);
             if (!insn) break;
 
             insn->block = block;

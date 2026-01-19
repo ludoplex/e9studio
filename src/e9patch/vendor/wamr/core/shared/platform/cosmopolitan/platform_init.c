@@ -268,11 +268,8 @@ void os_icache_flush(void *start, size_t len)
 {
 #if defined(__aarch64__) || defined(_M_ARM64)
     /* ARM64 requires explicit cache flush for JIT */
-#ifdef __COSMOPOLITAN__
-    __clear_cache(start, (char *)start + len);
-#else
+    /* Use the GCC/Clang builtin which works everywhere including cosmocc */
     __builtin___clear_cache(start, (char *)start + len);
-#endif
 #else
     /* x86-64: icache is coherent with dcache, no flush needed */
     (void)start;

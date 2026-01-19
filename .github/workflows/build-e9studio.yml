@@ -28,41 +28,37 @@ jobs:
         id: cache-cosmocc
         uses: actions/cache@v4
         with:
-          path: /opt/cosmo
-          key: cosmocc-${{ env.COSMOCC_VERSION }}-linux
+          path: ~/cosmocc
+          key: cosmocc-${{ env.COSMOCC_VERSION }}-linux-v2
 
       - name: Install cosmocc toolchain
         if: steps.cache-cosmocc.outputs.cache-hit != 'true'
         run: |
-          # Download from GitHub releases for reliability
-          COSMO_URL="https://github.com/jart/cosmopolitan/releases/download/${COSMOCC_VERSION}/cosmocc-${COSMOCC_VERSION}.zip"
-          echo "Downloading cosmocc from: $COSMO_URL"
+          set -ex
+          mkdir -p ~/cosmocc
+          cd ~/cosmocc
 
-          mkdir -p /opt/cosmo
-          cd /opt/cosmo
+          # Download from cosmo.zip (always has latest)
+          echo "Downloading cosmocc toolchain..."
+          curl -fsSL "https://cosmo.zip/pub/cosmocc/cosmocc.zip" -o cosmocc.zip
 
-          # Try GitHub releases first, fallback to cosmo.zip
-          if ! curl -fsSL "$COSMO_URL" -o cosmocc.zip; then
-            echo "GitHub release not found, trying cosmo.zip..."
-            curl -fsSL "https://cosmo.zip/pub/cosmocc/cosmocc.zip" -o cosmocc.zip
-          fi
-
+          echo "Extracting..."
           unzip -q cosmocc.zip
           rm cosmocc.zip
 
           # Verify installation
           echo "Installed cosmocc toolchain:"
-          ls -la /opt/cosmo/bin/ | head -10
-          /opt/cosmo/bin/cosmocc --version || echo "Version check failed, continuing..."
+          ls -la ~/cosmocc/bin/ | head -10
+          ~/cosmocc/bin/cosmocc --version || true
 
       - name: Setup APE loader for Linux
         run: |
           # Register APE loader with binfmt_misc for direct execution
-          if [ -f /opt/cosmo/bin/ape-x86_64.elf ]; then
-            sudo cp /opt/cosmo/bin/ape-x86_64.elf /usr/bin/ape
+          if [ -f ~/cosmocc/bin/ape-x86_64.elf ]; then
+            sudo cp ~/cosmocc/bin/ape-x86_64.elf /usr/bin/ape
             sudo chmod +x /usr/bin/ape
-          elif [ -f /opt/cosmo/bin/ape.elf ]; then
-            sudo cp /opt/cosmo/bin/ape.elf /usr/bin/ape
+          elif [ -f ~/cosmocc/bin/ape.elf ]; then
+            sudo cp ~/cosmocc/bin/ape.elf /usr/bin/ape
             sudo chmod +x /usr/bin/ape
           fi
 
@@ -73,13 +69,11 @@ jobs:
 
       - name: Build e9studio (APE)
         run: |
-          export PATH="/opt/cosmo/bin:$PATH"
-          make -f Makefile.e9studio CC=/opt/cosmo/bin/cosmocc AR=/opt/cosmo/bin/cosmoar all
+          make -f Makefile.e9studio CC=~/cosmocc/bin/cosmocc AR=~/cosmocc/bin/cosmoar all
 
       - name: Run vendor library tests
         run: |
-          export PATH="/opt/cosmo/bin:$PATH"
-          make -f Makefile.e9studio CC=/opt/cosmo/bin/cosmocc AR=/opt/cosmo/bin/cosmoar test
+          make -f Makefile.e9studio CC=~/cosmocc/bin/cosmocc AR=~/cosmocc/bin/cosmoar test
 
       - name: Create embedded resources
         run: |
@@ -187,16 +181,22 @@ jobs:
       - name: Install cosmocc toolchain (macOS)
         if: steps.cache-cosmocc-macos.outputs.cache-hit != 'true'
         run: |
+          set -ex
           mkdir -p ~/cosmocc
           cd ~/cosmocc
 
           # Download cosmocc
+          echo "Downloading cosmocc toolchain..."
           curl -fsSL "https://cosmo.zip/pub/cosmocc/cosmocc.zip" -o cosmocc.zip
+
+          echo "Extracting..."
           unzip -q cosmocc.zip
           rm cosmocc.zip
 
           # Verify
-          ./bin/cosmocc --version || echo "Version check complete"
+          echo "Installed cosmocc toolchain:"
+          ls -la ~/cosmocc/bin/ | head -10
+          ~/cosmocc/bin/cosmocc --version || true
 
       - name: Build e9studio on macOS
         run: |

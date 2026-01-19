@@ -15,9 +15,8 @@
 #include <stdio.h>
 #include <ctype.h>
 
-#ifdef __COSMOPOLITAN__
-#include "cosmopolitan.h"
-#endif
+/* Note: When building with cosmocc, cosmopolitan libc is automatically provided.
+ * No need to include cosmopolitan.h - it's only for amalgamation builds. */
 
 /*
  * ============================================================================
@@ -224,6 +223,57 @@ void e9_binary_free(E9Binary *bin)
     free(bin);
 }
 
+E9Binary *e9_binary_open(const char *path)
+{
+    if (!path) return NULL;
+
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        fprintf(stderr, "e9analysis: cannot open '%s'\n", path);
+        return NULL;
+    }
+
+    /* Get file size */
+    fseek(fp, 0, SEEK_END);
+    long size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    if (size <= 0 || size > 1024 * 1024 * 1024) {  /* 1GB limit */
+        fprintf(stderr, "e9analysis: invalid file size\n");
+        fclose(fp);
+        return NULL;
+    }
+
+    /* Allocate buffer */
+    uint8_t *data = (uint8_t *)malloc((size_t)size);
+    if (!data) {
+        fprintf(stderr, "e9analysis: allocation failed\n");
+        fclose(fp);
+        return NULL;
+    }
+
+    /* Read file */
+    if (fread(data, 1, (size_t)size, fp) != (size_t)size) {
+        fprintf(stderr, "e9analysis: read error\n");
+        free(data);
+        fclose(fp);
+        return NULL;
+    }
+    fclose(fp);
+
+    /* Create binary context */
+    E9Binary *bin = e9_binary_create(data, (size_t)size);
+    if (!bin) {
+        free(data);
+        return NULL;
+    }
+
+    /* Auto-detect format */
+    e9_binary_detect(bin);
+
+    return bin;
+}
+
 /*
  * ============================================================================
  * Format and Architecture Detection
@@ -326,7 +376,7 @@ static int detect_elf(E9Binary *bin)
             const char *strtab = (const char *)(data + strtab_off);
 
             /* Count sections and look for debug info */
-            bin->sections = (typeof(bin->sections))e9_alloc(shnum * sizeof(*bin->sections));
+            bin->sections = e9_alloc(shnum * sizeof(*bin->sections));
             bin->num_sections = 0;
 
             for (uint16_t i = 0; i < shnum; i++) {
@@ -958,7 +1008,7 @@ static E9Instruction *disasm_aarch64(E9Binary *bin, uint64_t addr)
  * ============================================================================
  */
 
-E9Instruction *e9_disasm_one(E9Binary *bin, uint64_t addr)
+E9Instruction *e9_disasm_instruction(E9Binary *bin, uint64_t addr)
 {
     if (!bin) return NULL;
 
@@ -981,7 +1031,7 @@ E9Instruction *e9_disasm_range(E9Binary *bin, uint64_t start, uint64_t end)
     uint64_t addr = start;
 
     while (addr < end) {
-        E9Instruction *insn = e9_disasm_one(bin, addr);
+        E9Instruction *insn = e9_disasm_instruction(bin, addr);
         if (!insn) break;
 
         if (!head) {
@@ -995,6 +1045,24 @@ E9Instruction *e9_disasm_range(E9Binary *bin, uint64_t start, uint64_t end)
     }
 
     return head;
+}
+
+int e9_disasm(E9Binary *bin, uint64_t addr, E9Instruction *insn)
+{
+    if (!bin || !insn) return -1;
+
+    E9Instruction *tmp = e9_disasm_instruction(bin, addr);
+    if (!tmp) return -1;
+
+    /* Copy to provided struct */
+    *insn = *tmp;
+    insn->next = NULL;  /* Don't copy linked list pointer */
+    insn->block = NULL;
+
+    /* Free the temporary allocation */
+    free(tmp);
+
+    return 0;
 }
 
 const char *e9_disasm_str(E9Binary *bin, E9Instruction *insn, char *buf, size_t bufsize)
@@ -1335,7 +1403,7 @@ static int discover_functions_recursive(E9Binary *bin, uint64_t start)
     uint64_t max_addr = start + 0x10000;  /* Limit search */
 
     while (addr < max_addr) {
-        E9Instruction *insn = e9_disasm_one(bin, addr);
+        E9Instruction *insn = e9_disasm_instruction(bin, addr);
         if (!insn) break;
 
         if (insn->category == E9_INSN_RET) {
@@ -1526,7 +1594,7 @@ E9CFG *e9_cfg_build(E9Binary *bin, E9Function *func)
     uint64_t end_addr = func->end_address ? func->end_address : (func->address + 0x10000);
 
     while (addr < end_addr && num_leaders < max_blocks - 2) {
-        E9Instruction *insn = e9_disasm_one(bin, addr);
+        E9Instruction *insn = e9_disasm_instruction(bin, addr);
         if (!insn) break;
 
         if (insn->category == E9_INSN_CALL ||
@@ -1604,7 +1672,7 @@ E9CFG *e9_cfg_build(E9Binary *bin, E9Function *func)
         /* Disassemble block */
         addr = block->start_addr;
         while (addr < block->end_addr) {
-            E9Instruction *insn = e9_disasm_one(bin, addr);
+            E9Instruction *insn = e9_disasm_instruction(bin, addr);
             if (!insn) break;
 
             insn->block = block;

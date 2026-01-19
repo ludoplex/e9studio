@@ -15,9 +15,7 @@
 #include <fcntl.h>
 #include <errno.h>
 
-#ifdef __COSMOPOLITAN__
-#include "cosmopolitan.h"
-#endif
+/* Note: When building with cosmocc, cosmopolitan libc is automatically provided. */
 
 /* Optional library headers - conditionally included */
 #ifdef HAVE_CAPSTONE

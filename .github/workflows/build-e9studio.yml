@@ -28,15 +28,15 @@ jobs:
         id: cache-cosmocc
         uses: actions/cache@v4
         with:
-          path: ~/cosmocc
-          key: cosmocc-${{ env.COSMOCC_VERSION }}-linux-v2
+          path: ${{ github.workspace }}/cosmocc
+          key: cosmocc-${{ env.COSMOCC_VERSION }}-linux-v3
 
       - name: Install cosmocc toolchain
         if: steps.cache-cosmocc.outputs.cache-hit != 'true'
         run: |
           set -ex
-          mkdir -p ~/cosmocc
-          cd ~/cosmocc
+          mkdir -p $GITHUB_WORKSPACE/cosmocc
+          cd $GITHUB_WORKSPACE/cosmocc
 
           # Download from cosmo.zip (always has latest)
           echo "Downloading cosmocc toolchain..."
@@ -48,17 +48,17 @@ jobs:
 
           # Verify installation
           echo "Installed cosmocc toolchain:"
-          ls -la ~/cosmocc/bin/ | head -10
-          ~/cosmocc/bin/cosmocc --version || true
+          ls -la $GITHUB_WORKSPACE/cosmocc/bin/ | head -10
+          $GITHUB_WORKSPACE/cosmocc/bin/cosmocc --version || true
 
       - name: Setup APE loader for Linux
         run: |
           # Register APE loader with binfmt_misc for direct execution
-          if [ -f ~/cosmocc/bin/ape-x86_64.elf ]; then
-            sudo cp ~/cosmocc/bin/ape-x86_64.elf /usr/bin/ape
+          if [ -f $GITHUB_WORKSPACE/cosmocc/bin/ape-x86_64.elf ]; then
+            sudo cp $GITHUB_WORKSPACE/cosmocc/bin/ape-x86_64.elf /usr/bin/ape
             sudo chmod +x /usr/bin/ape
-          elif [ -f ~/cosmocc/bin/ape.elf ]; then
-            sudo cp ~/cosmocc/bin/ape.elf /usr/bin/ape
+          elif [ -f $GITHUB_WORKSPACE/cosmocc/bin/ape.elf ]; then
+            sudo cp $GITHUB_WORKSPACE/cosmocc/bin/ape.elf /usr/bin/ape
             sudo chmod +x /usr/bin/ape
           fi
 
@@ -69,11 +69,11 @@ jobs:
 
       - name: Build e9studio (APE)
         run: |
-          make -f Makefile.e9studio CC=~/cosmocc/bin/cosmocc AR=~/cosmocc/bin/cosmoar all
+          make -f Makefile.e9studio CC=$GITHUB_WORKSPACE/cosmocc/bin/cosmocc AR=$GITHUB_WORKSPACE/cosmocc/bin/cosmoar all
 
       - name: Run vendor library tests
         run: |
-          make -f Makefile.e9studio CC=~/cosmocc/bin/cosmocc AR=~/cosmocc/bin/cosmoar test
+          make -f Makefile.e9studio CC=$GITHUB_WORKSPACE/cosmocc/bin/cosmocc AR=$GITHUB_WORKSPACE/cosmocc/bin/cosmoar test
 
       - name: Create embedded resources
         run: |
@@ -175,15 +175,15 @@ jobs:
         id: cache-cosmocc-macos
         uses: actions/cache@v4
         with:
-          path: ~/cosmocc
-          key: cosmocc-${{ env.COSMOCC_VERSION }}-macos-arm64
+          path: ${{ github.workspace }}/cosmocc
+          key: cosmocc-${{ env.COSMOCC_VERSION }}-macos-v3
 
       - name: Install cosmocc toolchain (macOS)
         if: steps.cache-cosmocc-macos.outputs.cache-hit != 'true'
         run: |
           set -ex
-          mkdir -p ~/cosmocc
-          cd ~/cosmocc
+          mkdir -p $GITHUB_WORKSPACE/cosmocc
+          cd $GITHUB_WORKSPACE/cosmocc
 
           # Download cosmocc
           echo "Downloading cosmocc toolchain..."
@@ -195,12 +195,12 @@ jobs:
 
           # Verify
           echo "Installed cosmocc toolchain:"
-          ls -la ~/cosmocc/bin/ | head -10
-          ~/cosmocc/bin/cosmocc --version || true
+          ls -la $GITHUB_WORKSPACE/cosmocc/bin/ | head -10
+          $GITHUB_WORKSPACE/cosmocc/bin/cosmocc --version || true
 
       - name: Build e9studio on macOS
         run: |
-          make -f Makefile.e9studio CC=~/cosmocc/bin/cosmocc AR=~/cosmocc/bin/cosmoar all
+          make -f Makefile.e9studio CC=$GITHUB_WORKSPACE/cosmocc/bin/cosmocc AR=$GITHUB_WORKSPACE/cosmocc/bin/cosmoar all
 
       - name: Test build
         run: |

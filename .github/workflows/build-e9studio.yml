@@ -128,7 +128,7 @@ jobs:
   # Test APE on macOS (Intel)
   test-macos-intel:
     needs: build-ape
-    runs-on: macos-13
+    runs-on: macos-15
     steps:
       - name: Download APE artifact
         uses: actions/download-artifact@v4

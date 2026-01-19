@@ -16,9 +16,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#ifdef __COSMOPOLITAN__
-#include "cosmopolitan.h"
-#endif
+/* Note: When building with cosmocc, cosmopolitan libc is automatically provided. */
 
 /*
  * Studio Analysis Context

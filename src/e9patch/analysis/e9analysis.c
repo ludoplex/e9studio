@@ -15,9 +15,8 @@
 #include <stdio.h>
 #include <ctype.h>
 
-#ifdef __COSMOPOLITAN__
-#include "cosmopolitan.h"
-#endif
+/* Note: When building with cosmocc, cosmopolitan libc is automatically provided.
+ * No need to include cosmopolitan.h - it's only for amalgamation builds. */
 
 /*
  * ============================================================================

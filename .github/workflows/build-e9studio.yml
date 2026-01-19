@@ -107,15 +107,16 @@ jobs:
           name: e9studio-ape
           path: build/e9studio.com
 
-  # Alternative build using setup-cosmocc action
+  # Alternative build using setup-cosmocc action (experimental)
   build-ape-action:
     runs-on: ubuntu-latest
+    continue-on-error: true  # Don't fail the workflow if this experimental job fails
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup cosmocc
-        uses: bjia56/setup-cosmocc@v2
+        uses: bjia56/setup-cosmocc@main
         with:
           version: latest
 

@@ -5,7 +5,7 @@
  * A single APE file that provides:
  * - Embedded WASM VM (wasm3)
  * - e9patch core (as WASM module in ZipOS)
- * - Embedded compiler (TinyCC as WASM in ZipOS)
+ * - Embedded compiler (cosmocc as WASM in ZipOS)
  * - Terminal UI for editing
  * - File watcher for hot-reload
  * - Self-modification capability (save patches to own ZipOS)
@@ -123,7 +123,7 @@ static void print_usage(const char *prog) {
     printf("\n");
     printf("ZipOS contents:\n");
     printf("  /zip/e9patch.wasm    - Patching engine\n");
-    printf("  /zip/tcc.wasm        - Embedded C compiler\n");
+    printf("  /zip/cosmocc.wasm    - Embedded C compiler\n");
     printf("  /zip/target.elf      - Target binary (if embedded)\n");
     printf("  /zip/src/*           - Source files (if embedded)\n");
 }

@@ -458,6 +458,13 @@ static int run_self_tests(void) {
         else { printf("[FAIL]\n"); failed++; } \
     } while(0)
 
+    /* WARN doesn't count as failure - used for optional features */
+    #define WARN(name, cond) do { \
+        printf("  %-40s ", name); \
+        if (cond) { printf("[PASS]\n"); passed++; } \
+        else { printf("[WARN]\n"); /* not a failure */ } \
+    } while(0)
+
     /* Test WASM runtime */
     E9WasmConfig config = {
         .stack_size = 64 * 1024,
@@ -474,8 +481,9 @@ static int run_self_tests(void) {
     TEST("Shared buffer allocation", buf != NULL && buf_size > 0);
 
     /* Test ZipOS access (embedded ZIP in executable) */
+    /* This is optional - only available after resources.zip is appended */
     int zipos_ok = e9wasm_zipos_available();
-    TEST("Embedded ZipOS available", zipos_ok);
+    WARN("Embedded ZipOS available", zipos_ok);
 
     /* Try reading a file from embedded ZIP */
     if (zipos_ok) {

@@ -540,6 +540,13 @@ static int parse_register(const char *name, int *size_bits)
     if (strcmp(name, "ch") == 0) { if (size_bits) *size_bits = 8; return 2; }
     if (strcmp(name, "dh") == 0) { if (size_bits) *size_bits = 8; return 3; }
     
+    /* Special registers - rip and rflags */
+    if (strcmp(name, "rip") == 0) { if (size_bits) *size_bits = 64; return X64_RIP; }
+    if (strcmp(name, "rflags") == 0 || strcmp(name, "eflags") == 0) {
+        if (size_bits) *size_bits = 64;
+        return X64_RFLAGS;
+    }
+    
     return -1;
 }
 
@@ -567,18 +574,25 @@ static E9IRValue *parse_operand(E9Decompile *dc, const char *op, int default_siz
     const char *num = op;
     if (num[0] == '$') num++;  /* AT&T immediate prefix */
     
-    if (num[0] == '0' && num[1] == 'x') {
-        return e9_ir_const(dc, strtoll(num, NULL, 16), size);
-    }
-    if (isdigit(num[0]) || (num[0] == '-' && isdigit(num[1]))) {
-        return e9_ir_const(dc, strtoll(num, NULL, 10), size);
+    /* Use strtoll with base 0 so it handles optional sign and 0x/0 prefixes.
+       This correctly parses: 123, -123, 0x1a, -0x1a, 0777, etc. */
+    char *endptr = NULL;
+    long long imm = strtoll(num, &endptr, 0);
+    if (endptr != num && *endptr == '\0') {
+        return e9_ir_const(dc, imm, size);
     }
     
     /* Check for memory operand [base + index*scale + disp] or disp(base,index,scale) */
     if (op[0] == '[' || strchr(op, '(') != NULL) {
-        /* Memory operand - create a load placeholder */
-        E9IRValue *addr = e9_ir_const(dc, 0, 64);  /* Simplified */
-        return e9_ir_load(dc, addr, size / 8);
+        /* Memory operand - create a load placeholder.
+         * TODO: Implement full memory operand parsing (base, index, scale, displacement).
+         * Currently returns a load from a symbolic "MEM" address marker.
+         * IR consumers should check for E9_IR_LOAD op and handle appropriately. */
+        E9IRValue *mem_marker = dc_alloc(sizeof(E9IRValue));
+        if (!mem_marker) return NULL;
+        mem_marker->op = E9_IR_GLOBAL;
+        mem_marker->var.name = dc_strdup(op);  /* Preserve original for debugging */
+        return e9_ir_load(dc, mem_marker, size / 8);
     }
     
     /* Symbol reference */
@@ -587,6 +601,45 @@ static E9IRValue *parse_operand(E9Decompile *dc, const char *op, int default_siz
     v->op = E9_IR_GLOBAL;
     v->var.name = dc_strdup(op);
     return v;
+}
+
+/*
+ * Check if an E9IRValue represents a register.
+ * Returns the register number if it is a register, or -1 otherwise.
+ * Note: Reserved for future use in more complex lifting scenarios.
+ */
+static int ir_value_get_reg(E9IRValue *v) __attribute__((unused));
+static int ir_value_get_reg(E9IRValue *v)
+{
+    if (!v) return -1;
+    if (v->op == E9_IR_REG) return v->reg;
+    return -1;
+}
+
+/*
+ * Helper to get the destination for an IR statement.
+ * For register operands, returns the register as destination.
+ * For memory operands, returns the memory address (for store operations).
+ * Returns NULL if the operand cannot be used as a destination.
+ */
+static E9IRValue *ir_get_dest(E9Decompile *dc, E9IRValue *operand)
+{
+    if (!operand) return NULL;
+    
+    if (operand->op == E9_IR_REG) {
+        /* Register destination - return as-is */
+        return operand;
+    }
+    
+    if (operand->op == E9_IR_LOAD) {
+        /* Memory destination - for now, we don't support memory destinations.
+         * TODO: Implement store operations for memory destinations.
+         * Return NULL to signal that this operation cannot be lifted yet. */
+        return NULL;
+    }
+    
+    /* Other operand types (const, global) cannot be destinations */
+    return NULL;
 }
 
 /*
@@ -604,7 +657,14 @@ static E9IRStmt *lift_binary_op(E9Decompile *dc, E9Instruction *insn, E9IROp op)
         E9IRValue *src_val = parse_operand(dc, src, 64);
         
         if (dest_val && src_val) {
-            stmt->dest = e9_ir_reg(dc, dest_val->reg);
+            /* Check if destination is a valid target (register or memory) */
+            E9IRValue *ir_dest = ir_get_dest(dc, dest_val);
+            if (!ir_dest) {
+                /* Cannot lift: destination is not a register or supported memory.
+                 * Leave stmt->dest/value as NULL to signal unhandled instruction. */
+                return stmt;
+            }
+            stmt->dest = ir_dest;
             stmt->value = e9_ir_binary(dc, op, dest_val, src_val);
         }
     }
@@ -627,14 +687,25 @@ static E9IRStmt *lift_shift_op(E9Decompile *dc, E9Instruction *insn, E9IROp op)
         E9IRValue *shift_val = parse_operand(dc, shift, 8);
         
         if (dest_val && shift_val) {
-            stmt->dest = e9_ir_reg(dc, dest_val->reg);
+            /* Check if destination is a valid target (register or memory) */
+            E9IRValue *ir_dest = ir_get_dest(dc, dest_val);
+            if (!ir_dest) {
+                /* Cannot lift: destination is not a register or supported memory */
+                return stmt;
+            }
+            stmt->dest = ir_dest;
             stmt->value = e9_ir_binary(dc, op, dest_val, shift_val);
         }
     } else {
         /* Single operand form - shift by 1 */
         E9IRValue *dest_val = parse_operand(dc, insn->operands, 64);
         if (dest_val) {
-            stmt->dest = e9_ir_reg(dc, dest_val->reg);
+            /* Check if destination is a valid target */
+            E9IRValue *ir_dest = ir_get_dest(dc, dest_val);
+            if (!ir_dest) {
+                return stmt;
+            }
+            stmt->dest = ir_dest;
             stmt->value = e9_ir_binary(dc, op, dest_val, e9_ir_const(dc, 1, 8));
         }
     }
@@ -653,7 +724,13 @@ static E9IRStmt *lift_unary_op(E9Decompile *dc, E9Instruction *insn, E9IROp op)
     
     E9IRValue *operand = parse_operand(dc, insn->operands, 64);
     if (operand) {
-        stmt->dest = e9_ir_reg(dc, operand->reg);
+        /* Check if operand is a valid destination (register or memory) */
+        E9IRValue *ir_dest = ir_get_dest(dc, operand);
+        if (!ir_dest) {
+            /* Cannot lift: operand is not a register or supported memory */
+            return stmt;
+        }
+        stmt->dest = ir_dest;
         
         /* inc/dec are special - add/sub 1 */
         if (op == E9_IR_ADD) {

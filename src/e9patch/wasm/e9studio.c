@@ -211,25 +211,32 @@ static void enable_raw_mode(void) {
     /* Windows native: enable virtual terminal processing */
     HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
     HANDLE hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
-    
+
     if (hStdin == INVALID_HANDLE_VALUE) return;
-    
-    GetConsoleMode(hStdin, &g_orig_console_mode);
-    atexit(disable_raw_mode);
-    
+
+    /* Query current console mode for stdin; bail if it fails (e.g. redirected input) */
+    if (!GetConsoleMode(hStdin, &g_orig_console_mode))
+        return;
+
     DWORD mode = g_orig_console_mode;
     mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT);
     mode |= ENABLE_VIRTUAL_TERMINAL_INPUT;
-    SetConsoleMode(hStdin, mode);
-    
-    /* Enable ANSI escape sequences for output */
+
+    /* Enable raw-ish input mode; if this fails, don't register atexit or mark raw mode */
+    if (!SetConsoleMode(hStdin, mode))
+        return;
+
+    /* Enable ANSI escape sequences for output; if stdout is a console, require success */
     if (hStdout != INVALID_HANDLE_VALUE) {
         DWORD out_mode;
-        GetConsoleMode(hStdout, &out_mode);
+        if (!GetConsoleMode(hStdout, &out_mode))
+            return;
         out_mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-        SetConsoleMode(hStdout, out_mode);
+        if (!SetConsoleMode(hStdout, out_mode))
+            return;
     }
-    
+
+    atexit(disable_raw_mode);
     g_raw_mode = true;
 #else
     /* POSIX or Cosmopolitan: use termios */

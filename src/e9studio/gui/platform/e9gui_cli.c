@@ -380,7 +380,10 @@ static void handle_command(const char *line)
     char cmd[64] = {0};
     char arg[512] = {0};
 
+    /* Width specifiers ensure no buffer overflow: %63s for cmd[64], %511[^\n] for arg[512] */
     sscanf(line, "%63s %511[^\n]", cmd, arg);
+    cmd[sizeof(cmd) - 1] = '\0';  /* Ensure null-termination */
+    arg[sizeof(arg) - 1] = '\0';
     e9util_str_trim(arg);
 
     E9EditorState *ed = e9app_get_active_editor(g_app);

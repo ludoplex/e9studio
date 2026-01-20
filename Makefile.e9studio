@@ -204,7 +204,10 @@ clean:
 # WASM Payload Build
 #########################################################################
 
-BINARYEN_PATH ?= /home/user/binaryen
+# Binaryen path: check ../binaryen (sibling), then fall back to /opt/binaryen
+BINARYEN_PATH ?= $(shell if [ -d "../binaryen" ]; then echo "../binaryen"; \
+                         elif [ -d "/opt/binaryen" ]; then echo "/opt/binaryen"; \
+                         else echo "binaryen"; fi)
 
 # Build WASM payloads for e9studio
 wasm:
@@ -218,7 +221,8 @@ binaryen:
 		cd $(BINARYEN_PATH) && ./cosmo/build.sh; \
 	else \
 		echo "Binaryen not found at $(BINARYEN_PATH)"; \
-		echo "Clone it with: git clone https://github.com/ludoplex/binaryen.git $(BINARYEN_PATH)"; \
+		echo "Set BINARYEN_PATH or clone it with:"; \
+		echo "  git clone https://github.com/ludoplex/binaryen.git ../binaryen"; \
 		exit 1; \
 	fi
 

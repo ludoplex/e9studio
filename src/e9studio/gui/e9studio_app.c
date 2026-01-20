@@ -465,9 +465,15 @@ E9EditorState *e9app_new_editor(E9AppState *app)
 
     /* Add to editor list */
     if (app->editor_count >= app->editor_capacity) {
-        app->editor_capacity = app->editor_capacity ? app->editor_capacity * 2 : 4;
-        app->editors = realloc(app->editors,
-                               app->editor_capacity * sizeof(E9EditorState *));
+        size_t new_capacity = app->editor_capacity ? app->editor_capacity * 2 : 4;
+        E9EditorState **new_editors = realloc(app->editors,
+                                              new_capacity * sizeof(E9EditorState *));
+        if (!new_editors) {
+            e9editor_destroy(ed);
+            return NULL;
+        }
+        app->editors = new_editors;
+        app->editor_capacity = new_capacity;
     }
     app->editors[app->editor_count++] = ed;
     app->active_editor = app->editor_count - 1;
@@ -668,9 +674,15 @@ int e9menu_load_ini(E9MenuSet *menus, const char *path)
 
                 /* Allocate new menu */
                 if (menus->menu_count >= menus->menu_capacity) {
-                    menus->menu_capacity = menus->menu_capacity ? menus->menu_capacity * 2 : 8;
-                    menus->menus = realloc(menus->menus,
-                                           menus->menu_capacity * sizeof(E9GuiMenu));
+                    size_t new_capacity = menus->menu_capacity ? menus->menu_capacity * 2 : 8;
+                    E9GuiMenu *new_menus = realloc(menus->menus,
+                                                   new_capacity * sizeof(E9GuiMenu));
+                    if (!new_menus) {
+                        fclose(f);
+                        return -1;
+                    }
+                    menus->menus = new_menus;
+                    menus->menu_capacity = new_capacity;
                 }
                 current_menu = &menus->menus[menus->menu_count++];
                 memset(current_menu, 0, sizeof(E9GuiMenu));
@@ -686,10 +698,13 @@ int e9menu_load_ini(E9MenuSet *menus, const char *path)
 
                 /* Add item to menu */
                 if (current_menu->item_count >= current_menu->item_capacity) {
-                    current_menu->item_capacity = current_menu->item_capacity ?
-                                                  current_menu->item_capacity * 2 : 16;
-                    current_menu->items = realloc(current_menu->items,
-                                                  current_menu->item_capacity * sizeof(E9GuiMenuItem));
+                    size_t new_capacity = current_menu->item_capacity ?
+                                          current_menu->item_capacity * 2 : 16;
+                    E9GuiMenuItem *new_items = realloc(current_menu->items,
+                                                       new_capacity * sizeof(E9GuiMenuItem));
+                    if (!new_items) continue;  /* Skip this item on failure */
+                    current_menu->items = new_items;
+                    current_menu->item_capacity = new_capacity;
                 }
                 E9GuiMenuItem *item = &current_menu->items[current_menu->item_count++];
                 memset(item, 0, sizeof(E9GuiMenuItem));
@@ -699,14 +714,17 @@ int e9menu_load_ini(E9MenuSet *menus, const char *path)
             } else if (s[0] == '-') {
                 /* Separator */
                 if (current_menu->item_count >= current_menu->item_capacity) {
-                    current_menu->item_capacity = current_menu->item_capacity ?
-                                                  current_menu->item_capacity * 2 : 16;
-                    current_menu->items = realloc(current_menu->items,
-                                                  current_menu->item_capacity * sizeof(E9GuiMenuItem));
+                    size_t new_capacity = current_menu->item_capacity ?
+                                          current_menu->item_capacity * 2 : 16;
+                    E9GuiMenuItem *new_items = realloc(current_menu->items,
+                                                       new_capacity * sizeof(E9GuiMenuItem));
+                    if (!new_items) continue;  /* Skip this item on failure */
+                    current_menu->items = new_items;
+                    current_menu->item_capacity = new_capacity;
                 }
                 E9GuiMenuItem *item = &current_menu->items[current_menu->item_count++];
                 memset(item, 0, sizeof(E9GuiMenuItem));
-                strcpy(item->label, "-");
+                strncpy(item->label, "-", sizeof(item->label) - 1);
             }
         }
     }

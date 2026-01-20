@@ -17,10 +17,12 @@
 
 .PHONY: all clean optimize check-tools
 
-# Tool paths
-BINARYEN_PATH ?= /home/user/binaryen
-WASM_OPT ?= $(BINARYEN_PATH)/build-cosmo/bin/wasm-opt.com
-WASM_AS ?= $(BINARYEN_PATH)/build-cosmo/bin/wasm-as.com
+# Tool paths - prefer sibling binaryen, then /opt, then system PATH
+BINARYEN_PATH ?= $(shell if [ -d "../../../../binaryen" ]; then echo "../../../../binaryen"; \
+                         elif [ -d "/opt/binaryen" ]; then echo "/opt/binaryen"; \
+                         else echo ""; fi)
+WASM_OPT ?= $(if $(BINARYEN_PATH),$(BINARYEN_PATH)/build-cosmo/bin/wasm-opt.com,wasm-opt)
+WASM_AS ?= $(if $(BINARYEN_PATH),$(BINARYEN_PATH)/build-cosmo/bin/wasm-as.com,wasm-as)
 
 # Alternative: use system tools if binaryen APE not built
 ifeq ($(wildcard $(WASM_OPT)),)

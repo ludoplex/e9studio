@@ -410,8 +410,14 @@ E9Panel *e9gui_create_panel(E9Window *win, const char *id, E9PanelType type)
 
     /* Add to window's panel list */
     if (win->panel_count >= win->panel_capacity) {
-        win->panel_capacity = win->panel_capacity ? win->panel_capacity * 2 : 8;
-        win->panels = realloc(win->panels, win->panel_capacity * sizeof(E9Panel *));
+        size_t new_capacity = win->panel_capacity ? win->panel_capacity * 2 : 8;
+        E9Panel **new_panels = realloc(win->panels, new_capacity * sizeof(E9Panel *));
+        if (!new_panels) {
+            free(panel);
+            return NULL;
+        }
+        win->panels = new_panels;
+        win->panel_capacity = new_capacity;
     }
     win->panels[win->panel_count++] = panel;
 
@@ -457,10 +463,13 @@ void e9gui_panel_set_text(E9Panel *panel, const char *text)
 
     size_t len = strlen(text) + 1;
     if (len > panel->text_capacity) {
-        panel->text_capacity = len * 2;
-        panel->text_content = realloc(panel->text_content, panel->text_capacity);
+        size_t new_capacity = len * 2;
+        char *new_content = realloc(panel->text_content, new_capacity);
+        if (!new_content) return;  /* Keep existing content on failure */
+        panel->text_content = new_content;
+        panel->text_capacity = new_capacity;
     }
-    strcpy(panel->text_content, text);
+    memcpy(panel->text_content, text, len);
 }
 
 const char *e9gui_panel_get_text(E9Panel *panel)

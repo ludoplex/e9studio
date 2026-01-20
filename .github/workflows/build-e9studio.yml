@@ -82,13 +82,47 @@ jobs:
           echo "1.0.0" > .cosmo/VERSION
           echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > .cosmo/BUILD_TIME
           echo "linux,macos,windows,freebsd,openbsd,netbsd" > .cosmo/PLATFORMS
+          
+          # Copy WASM modules if they exist
+          if [ -f "build/e9patch.wasm" ]; then
+            echo "Including e9patch.wasm in ZipOS"
+            cp build/e9patch.wasm .cosmo/
+          else
+            echo "Note: e9patch.wasm not found, native mode will be used"
+          fi
+          
+          if [ -f "build/tcc.wasm" ]; then
+            echo "Including tcc.wasm in ZipOS"
+            cp build/tcc.wasm .cosmo/
+          fi
+          
+          # Also check in src/ directory for pre-built modules
+          if [ -f "src/e9patch/wasm/e9patch.wasm" ]; then
+            echo "Including e9patch.wasm from src/"
+            cp src/e9patch/wasm/e9patch.wasm .cosmo/
+          fi
+          
+          if [ -f "src/e9patch/wasm/tcc.wasm" ]; then
+            echo "Including tcc.wasm from src/"
+            cp src/e9patch/wasm/tcc.wasm .cosmo/
+          fi
+          
+          # Create the resources archive
           zip -r resources.zip .cosmo/
+          
+          # List what's being embedded
+          echo "Contents of resources.zip:"
+          unzip -l resources.zip
 
       - name: Create e9studio APE with embedded ZipOS
         run: |
           cp build/e9studio.com build/e9studio.com.bak
           cat resources.zip >> build/e9studio.com
           chmod +x build/e9studio.com
+          
+          # Verify the embedded ZIP content
+          echo "Verifying embedded ZipOS in APE binary:"
+          unzip -l build/e9studio.com 2>/dev/null | tail -10 || true
 
       - name: Verify APE on Linux
         run: |
@@ -231,6 +265,15 @@ jobs:
           mkdir -p .cosmo
           echo "E9Studio Test Build" > .cosmo/README
           echo "test" > .cosmo/VERSION
+          
+          # Copy WASM modules if available
+          for wasm in build/*.wasm src/e9patch/wasm/*.wasm; do
+            if [ -f "$wasm" ]; then
+              echo "Including $(basename $wasm) in ZipOS"
+              cp "$wasm" .cosmo/
+            fi
+          done
+          
           zip -r resources.zip .cosmo/
           cat resources.zip >> build/e9studio.com
           ./build/e9studio.com --self-test

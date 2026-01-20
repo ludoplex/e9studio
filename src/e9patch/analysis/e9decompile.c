@@ -471,6 +471,202 @@ static void emit_value(E9Decompile *dc, E9IRValue *v, int precedence)
 #define X64_R13 13
 #define X64_R14 14
 #define X64_R15 15
+#define X64_RIP 16
+#define X64_RFLAGS 17
+
+/* 32-bit register names */
+static const char *x86_reg32_names[] = {
+    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp",
+    "r8d", "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d"
+};
+
+/* 16-bit register names */
+static const char *x86_reg16_names[] = {
+    "ax", "bx", "cx", "dx", "si", "di", "bp", "sp",
+    "r8w", "r9w", "r10w", "r11w", "r12w", "r13w", "r14w", "r15w"
+};
+
+/* 8-bit register names */
+static const char *x86_reg8_names[] = {
+    "al", "bl", "cl", "dl", "sil", "dil", "bpl", "spl",
+    "r8b", "r9b", "r10b", "r11b", "r12b", "r13b", "r14b", "r15b"
+};
+
+/*
+ * Parse a register name and return its index and size in bits
+ */
+static int parse_register(const char *name, int *size_bits)
+{
+    if (!name || !*name) return -1;
+    
+    /* Remove leading % if present (AT&T syntax) */
+    if (name[0] == '%') name++;
+    
+    /* 64-bit registers */
+    for (int i = 0; i < 16; i++) {
+        if (strcmp(name, x64_reg_names[i]) == 0) {
+            if (size_bits) *size_bits = 64;
+            return i;
+        }
+    }
+    
+    /* 32-bit registers */
+    for (int i = 0; i < 16; i++) {
+        if (strcmp(name, x86_reg32_names[i]) == 0) {
+            if (size_bits) *size_bits = 32;
+            return i;
+        }
+    }
+    
+    /* 16-bit registers */
+    for (int i = 0; i < 16; i++) {
+        if (strcmp(name, x86_reg16_names[i]) == 0) {
+            if (size_bits) *size_bits = 16;
+            return i;
+        }
+    }
+    
+    /* 8-bit registers */
+    for (int i = 0; i < 16; i++) {
+        if (strcmp(name, x86_reg8_names[i]) == 0) {
+            if (size_bits) *size_bits = 8;
+            return i;
+        }
+    }
+    
+    /* Special high byte registers */
+    if (strcmp(name, "ah") == 0) { if (size_bits) *size_bits = 8; return 0; }
+    if (strcmp(name, "bh") == 0) { if (size_bits) *size_bits = 8; return 1; }
+    if (strcmp(name, "ch") == 0) { if (size_bits) *size_bits = 8; return 2; }
+    if (strcmp(name, "dh") == 0) { if (size_bits) *size_bits = 8; return 3; }
+    
+    return -1;
+}
+
+/*
+ * Parse an operand (register, immediate, or memory reference)
+ */
+static E9IRValue *parse_operand(E9Decompile *dc, const char *op, int default_size)
+{
+    if (!op || !*op) return NULL;
+    
+    /* Skip leading whitespace */
+    while (*op == ' ' || *op == '\t') op++;
+    
+    /* Remove AT&T prefix */
+    if (op[0] == '%') op++;
+    
+    /* Check for register */
+    int size = default_size;
+    int reg = parse_register(op, &size);
+    if (reg >= 0) {
+        return e9_ir_reg(dc, reg);
+    }
+    
+    /* Check for immediate ($ prefix for AT&T, or number for Intel) */
+    const char *num = op;
+    if (num[0] == '$') num++;  /* AT&T immediate prefix */
+    
+    if (num[0] == '0' && num[1] == 'x') {
+        return e9_ir_const(dc, strtoll(num, NULL, 16), size);
+    }
+    if (isdigit(num[0]) || (num[0] == '-' && isdigit(num[1]))) {
+        return e9_ir_const(dc, strtoll(num, NULL, 10), size);
+    }
+    
+    /* Check for memory operand [base + index*scale + disp] or disp(base,index,scale) */
+    if (op[0] == '[' || strchr(op, '(') != NULL) {
+        /* Memory operand - create a load placeholder */
+        E9IRValue *addr = e9_ir_const(dc, 0, 64);  /* Simplified */
+        return e9_ir_load(dc, addr, size / 8);
+    }
+    
+    /* Symbol reference */
+    E9IRValue *v = dc_alloc(sizeof(E9IRValue));
+    if (!v) return NULL;
+    v->op = E9_IR_GLOBAL;
+    v->var.name = dc_strdup(op);
+    return v;
+}
+
+/*
+ * Create an IR statement for a binary operation (add, sub, and, or, xor, etc.)
+ */
+static E9IRStmt *lift_binary_op(E9Decompile *dc, E9Instruction *insn, E9IROp op)
+{
+    E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+    if (!stmt) return NULL;
+    stmt->addr = insn->address;
+    
+    char dest[64], src[128];
+    if (sscanf(insn->operands, "%63[^,], %127s", dest, src) == 2) {
+        E9IRValue *dest_val = parse_operand(dc, dest, 64);
+        E9IRValue *src_val = parse_operand(dc, src, 64);
+        
+        if (dest_val && src_val) {
+            stmt->dest = e9_ir_reg(dc, dest_val->reg);
+            stmt->value = e9_ir_binary(dc, op, dest_val, src_val);
+        }
+    }
+    
+    return stmt;
+}
+
+/*
+ * Create an IR statement for a shift operation
+ */
+static E9IRStmt *lift_shift_op(E9Decompile *dc, E9Instruction *insn, E9IROp op)
+{
+    E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+    if (!stmt) return NULL;
+    stmt->addr = insn->address;
+    
+    char dest[64], shift[32];
+    if (sscanf(insn->operands, "%63[^,], %31s", dest, shift) == 2) {
+        E9IRValue *dest_val = parse_operand(dc, dest, 64);
+        E9IRValue *shift_val = parse_operand(dc, shift, 8);
+        
+        if (dest_val && shift_val) {
+            stmt->dest = e9_ir_reg(dc, dest_val->reg);
+            stmt->value = e9_ir_binary(dc, op, dest_val, shift_val);
+        }
+    } else {
+        /* Single operand form - shift by 1 */
+        E9IRValue *dest_val = parse_operand(dc, insn->operands, 64);
+        if (dest_val) {
+            stmt->dest = e9_ir_reg(dc, dest_val->reg);
+            stmt->value = e9_ir_binary(dc, op, dest_val, e9_ir_const(dc, 1, 8));
+        }
+    }
+    
+    return stmt;
+}
+
+/*
+ * Create an IR statement for a unary operation (not, neg, inc, dec)
+ */
+static E9IRStmt *lift_unary_op(E9Decompile *dc, E9Instruction *insn, E9IROp op)
+{
+    E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+    if (!stmt) return NULL;
+    stmt->addr = insn->address;
+    
+    E9IRValue *operand = parse_operand(dc, insn->operands, 64);
+    if (operand) {
+        stmt->dest = e9_ir_reg(dc, operand->reg);
+        
+        /* inc/dec are special - add/sub 1 */
+        if (op == E9_IR_ADD) {
+            stmt->value = e9_ir_binary(dc, E9_IR_ADD, operand, e9_ir_const(dc, 1, 64));
+        } else if (op == E9_IR_SUB) {
+            stmt->value = e9_ir_binary(dc, E9_IR_SUB, operand, e9_ir_const(dc, 1, 64));
+        } else {
+            stmt->value = e9_ir_unary(dc, op, operand);
+        }
+    }
+    
+    return stmt;
+}
 
 static E9IRStmt *lift_instruction(E9Decompile *dc, E9IRFunc *func, E9Instruction *insn)
 {

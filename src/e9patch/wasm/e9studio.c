@@ -33,17 +33,52 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
-#include <sys/select.h>
-#include <termios.h>
-#include <sys/ioctl.h>
 #include <time.h>
 #include <errno.h>
+
+/* Platform-specific includes for terminal handling */
+#ifdef __COSMOPOLITAN__
+#include <cosmo.h>
+#include <termios.h>
+#include <sys/ioctl.h>
+#include <sys/select.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#include <conio.h>
+#else
+#include <termios.h>
+#include <sys/ioctl.h>
+#include <sys/select.h>
+#endif
 
 #include "e9wasm_host.h"
 #include "../analysis/e9studio_analysis.h"
 
 #ifdef __linux__
 #include <sys/inotify.h>
+#endif
+
+/*
+ * Platform detection helpers for Cosmopolitan
+ */
+#ifdef __COSMOPOLITAN__
+static inline bool is_windows(void) { return IsWindows(); }
+static inline bool is_linux(void) { return IsLinux(); }
+#else
+static inline bool is_windows(void) {
+#ifdef _WIN32
+    return true;
+#else
+    return false;
+#endif
+}
+static inline bool is_linux(void) {
+#ifdef __linux__
+    return true;
+#else
+    return false;
+#endif
+}
 #endif
 
 /*
@@ -130,8 +165,14 @@ static TUIState g_tui = {
  * Global State
  */
 static volatile bool g_running = true;
-static struct termios g_orig_termios;
 static bool g_raw_mode = false;
+
+/* Platform-specific terminal state */
+#if defined(_WIN32) && !defined(__COSMOPOLITAN__)
+static DWORD g_orig_console_mode = 0;
+#else
+static struct termios g_orig_termios;
+#endif
 
 /* View buffer for rendering */
 #define VIEW_BUF_SIZE (64 * 1024)
@@ -146,16 +187,59 @@ static void signal_handler(int sig) {
 }
 
 /*
- * Terminal handling
+ * Terminal handling - cross-platform implementation
  */
 static void disable_raw_mode(void) {
-    if (g_raw_mode) {
-        tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_orig_termios);
-        g_raw_mode = false;
+    if (!g_raw_mode) return;
+
+#if defined(_WIN32) && !defined(__COSMOPOLITAN__)
+    /* Windows native: restore console mode */
+    HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
+    if (hStdin != INVALID_HANDLE_VALUE) {
+        SetConsoleMode(hStdin, g_orig_console_mode);
     }
+#else
+    /* POSIX or Cosmopolitan: restore termios */
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_orig_termios);
+#endif
+
+    g_raw_mode = false;
 }
 
 static void enable_raw_mode(void) {
+#if defined(_WIN32) && !defined(__COSMOPOLITAN__)
+    /* Windows native: enable virtual terminal processing */
+    HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
+    HANDLE hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
+
+    if (hStdin == INVALID_HANDLE_VALUE) return;
+
+    /* Query current console mode for stdin; bail if it fails (e.g. redirected input) */
+    if (!GetConsoleMode(hStdin, &g_orig_console_mode))
+        return;
+
+    DWORD mode = g_orig_console_mode;
+    mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT);
+    mode |= ENABLE_VIRTUAL_TERMINAL_INPUT;
+
+    /* Enable raw-ish input mode; if this fails, don't register atexit or mark raw mode */
+    if (!SetConsoleMode(hStdin, mode))
+        return;
+
+    /* Enable ANSI escape sequences for output; if stdout is a console, require success */
+    if (hStdout != INVALID_HANDLE_VALUE) {
+        DWORD out_mode;
+        if (!GetConsoleMode(hStdout, &out_mode))
+            return;
+        out_mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+        if (!SetConsoleMode(hStdout, out_mode))
+            return;
+    }
+
+    atexit(disable_raw_mode);
+    g_raw_mode = true;
+#else
+    /* POSIX or Cosmopolitan: use termios */
     if (!isatty(STDIN_FILENO)) return;
 
     tcgetattr(STDIN_FILENO, &g_orig_termios);
@@ -168,15 +252,27 @@ static void enable_raw_mode(void) {
 
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
     g_raw_mode = true;
+#endif
 }
 
 static void get_terminal_size(void) {
-    /* Try to get terminal size */
+#if defined(_WIN32) && !defined(__COSMOPOLITAN__)
+    /* Windows native: use console API */
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    HANDLE hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hStdout != INVALID_HANDLE_VALUE && 
+        GetConsoleScreenBufferInfo(hStdout, &csbi)) {
+        g_tui.term_cols = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+        g_tui.term_rows = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+    }
+#else
+    /* POSIX or Cosmopolitan: use ioctl */
     struct winsize ws;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
         g_tui.term_rows = ws.ws_row;
         g_tui.term_cols = ws.ws_col;
     }
+#endif
 }
 
 /*
@@ -302,6 +398,20 @@ static int init_wasm(void) {
         fprintf(stderr, "Initializing WASM runtime...\n");
     }
 
+    /* Check if ZipOS is available before trying to use WASM modules */
+    int zipos_ok = e9wasm_zipos_available();
+    int wasm_exists = zipos_ok && e9wasm_zipos_file_exists("/zip/e9patch.wasm");
+
+    if (!wasm_exists) {
+        /* Log in verbose mode or when ZipOS is explicitly disabled */
+        const char *disable_env = getenv("COSMOPOLITAN_DISABLE_ZIPOS");
+        if (g_config.verbose || (disable_env && strcmp(disable_env, "1") == 0)) {
+            fprintf(stderr, "Note: e9patch.wasm not found in ZipOS, running in native mode\n");
+        }
+        /* Native mode is fully functional for analysis and decompilation */
+        return 0;
+    }
+
     E9WasmConfig config = {
         .stack_size = 64 * 1024,
         .heap_size = 32 * 1024 * 1024,
@@ -321,8 +431,15 @@ static int init_wasm(void) {
 
     /* Try to load WASM modules (optional) */
     void *module = e9wasm_load_module("/zip/e9patch.wasm");
-    if (module && g_config.verbose) {
-        fprintf(stderr, "Loaded e9patch.wasm for sandboxed execution\n");
+    if (module) {
+        if (g_config.verbose) {
+            fprintf(stderr, "Loaded e9patch.wasm for sandboxed execution\n");
+        }
+    } else {
+        /* Module load failed - continue in native mode */
+        if (g_config.verbose) {
+            fprintf(stderr, "WASM module load failed, continuing in native mode\n");
+        }
     }
 
     return 0;

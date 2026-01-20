@@ -750,164 +750,516 @@ static E9IRStmt *lift_unary_op(E9Decompile *dc, E9Instruction *insn, E9IROp op)
     return stmt;
 }
 
-static E9IRStmt *lift_instruction(E9Decompile *dc, E9IRFunc *func, E9Instruction *insn)
+/*
+ * Helper to check if mnemonic matches any of the given variants
+ */
+static bool mnemonic_is(const char *mnemonic, const char *base)
 {
-    (void)func;
+    size_t len = strlen(base);
+    if (strncmp(mnemonic, base, len) != 0) return false;
+    /* Accept: base, baseq, basel, basew, baseb */
+    char suffix = mnemonic[len];
+    return suffix == '\0' || suffix == 'q' || suffix == 'l' || 
+           suffix == 'w' || suffix == 'b';
+}
 
+/*
+ * Create an IR statement for a mov-like operation (mov, movzx, movsx, lea)
+ */
+static E9IRStmt *lift_mov_op(E9Decompile *dc, E9Instruction *insn, bool is_lea)
+{
     E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
     if (!stmt) return NULL;
     stmt->addr = insn->address;
+    
+    char dest[64], src[128];
+    if (sscanf(insn->operands, "%63[^,], %127s", dest, src) == 2) {
+        E9IRValue *dest_val = parse_operand(dc, dest, 64);
+        E9IRValue *src_val = parse_operand(dc, src, 64);
+        
+        if (dest_val && src_val) {
+            E9IRValue *ir_dest = ir_get_dest(dc, dest_val);
+            if (!ir_dest) return stmt;
+            
+            stmt->dest = ir_dest;
+            if (is_lea && src_val->op == E9_IR_LOAD) {
+                /* LEA: take the address, not the value */
+                stmt->value = src_val->mem.addr;
+            } else {
+                stmt->value = src_val;
+            }
+        }
+    }
+    return stmt;
+}
 
-    /* Parse operands to determine operation */
+/*
+ * Create an IR statement for push/pop operations
+ */
+static E9IRStmt *lift_stack_op(E9Decompile *dc, E9Instruction *insn, bool is_push)
+{
+    E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+    if (!stmt) return NULL;
+    stmt->addr = insn->address;
+    
+    E9IRValue *operand = parse_operand(dc, insn->operands, 64);
+    if (!operand) return stmt;
+    
+    if (is_push) {
+        /* push: rsp -= 8; [rsp] = operand */
+        /* Simplified: just note the push */
+        stmt->dest = NULL;  /* Side effect only */
+        stmt->value = operand;
+    } else {
+        /* pop: operand = [rsp]; rsp += 8 */
+        E9IRValue *ir_dest = ir_get_dest(dc, operand);
+        if (!ir_dest) return stmt;
+        stmt->dest = ir_dest;
+        stmt->value = e9_ir_load(dc, e9_ir_reg(dc, X64_RSP), 8);
+    }
+    return stmt;
+}
+
+/*
+ * Create an IR statement for comparison/test (sets flags, no dest)
+ */
+static E9IRStmt *lift_cmp_op(E9Decompile *dc, E9Instruction *insn, E9IROp op)
+{
+    E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+    if (!stmt) return NULL;
+    stmt->addr = insn->address;
+    
+    char left[64], right[128];
+    if (sscanf(insn->operands, "%63[^,], %127s", left, right) == 2) {
+        E9IRValue *left_val = parse_operand(dc, left, 64);
+        E9IRValue *right_val = parse_operand(dc, right, 64);
+        
+        if (left_val && right_val) {
+            /* cmp/test set flags - dest is RFLAGS (implicit) */
+            stmt->dest = e9_ir_reg(dc, X64_RFLAGS);
+            stmt->value = e9_ir_binary(dc, op, left_val, right_val);
+        }
+    }
+    return stmt;
+}
+
+/*
+ * Create an IR statement for conditional/unconditional jumps
+ */
+static E9IRStmt *lift_jump_op(E9Decompile *dc, E9Instruction *insn, const char *condition)
+{
+    E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+    if (!stmt) return NULL;
+    stmt->addr = insn->address;
+    
+    E9IRValue *branch = dc_alloc(sizeof(E9IRValue));
+    if (!branch) return stmt;
+    
+    if (condition == NULL) {
+        /* Unconditional jump */
+        branch->op = E9_IR_BRANCH;
+        branch->branch.cond = NULL;
+        branch->branch.true_block = (int)(insn->target & 0x7FFFFFFF);
+        branch->branch.false_block = -1;
+    } else {
+        /* Conditional jump */
+        branch->op = E9_IR_BRANCH;
+        branch->branch.cond = e9_ir_reg(dc, X64_RFLAGS);  /* Condition from flags */
+        branch->branch.true_block = (int)(insn->target & 0x7FFFFFFF);
+        branch->branch.false_block = (int)((insn->address + insn->size) & 0x7FFFFFFF);
+    }
+    
+    stmt->value = branch;
+    return stmt;
+}
+
+/*
+ * Create an IR statement for mul/imul/div/idiv
+ */
+static E9IRStmt *lift_muldiv_op(E9Decompile *dc, E9Instruction *insn, E9IROp op, bool is_signed)
+{
+    (void)is_signed;  /* TODO: Use for proper signed handling */
+    E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+    if (!stmt) return NULL;
+    stmt->addr = insn->address;
+    
+    /* Check for two-operand or three-operand form */
+    char op1[64], op2[64], op3[64];
+    int nops = sscanf(insn->operands, "%63[^,], %63[^,], %63s", op1, op2, op3);
+    
+    if (nops == 3) {
+        /* Three-operand: dest = src1 * src2 */
+        E9IRValue *dest_val = parse_operand(dc, op1, 64);
+        E9IRValue *src1_val = parse_operand(dc, op2, 64);
+        E9IRValue *src2_val = parse_operand(dc, op3, 64);
+        if (dest_val && src1_val && src2_val) {
+            E9IRValue *ir_dest = ir_get_dest(dc, dest_val);
+            if (ir_dest) {
+                stmt->dest = ir_dest;
+                stmt->value = e9_ir_binary(dc, op, src1_val, src2_val);
+            }
+        }
+    } else if (nops == 2) {
+        /* Two-operand: dest = dest * src */
+        E9IRValue *dest_val = parse_operand(dc, op1, 64);
+        E9IRValue *src_val = parse_operand(dc, op2, 64);
+        if (dest_val && src_val) {
+            E9IRValue *ir_dest = ir_get_dest(dc, dest_val);
+            if (ir_dest) {
+                stmt->dest = ir_dest;
+                stmt->value = e9_ir_binary(dc, op, dest_val, src_val);
+            }
+        }
+    } else {
+        /* One-operand: implicit rax * operand -> rdx:rax (simplified) */
+        E9IRValue *src_val = parse_operand(dc, insn->operands, 64);
+        if (src_val) {
+            stmt->dest = e9_ir_reg(dc, X64_RAX);
+            stmt->value = e9_ir_binary(dc, op, e9_ir_reg(dc, X64_RAX), src_val);
+        }
+    }
+    return stmt;
+}
+
+static E9IRStmt *lift_instruction(E9Decompile *dc, E9IRFunc *func, E9Instruction *insn)
+{
+    (void)func;
     const char *mnemonic = insn->mnemonic;
-    const char *operands = insn->operands;
 
-    /* mov instruction */
-    if (strcmp(mnemonic, "mov") == 0 || strcmp(mnemonic, "movq") == 0 ||
-        strcmp(mnemonic, "movl") == 0 || strcmp(mnemonic, "movabs") == 0) {
-        /* Simple register-to-register or immediate-to-register mov */
-        /* Parse dest and source from operands */
-        /* Format: "dest, source" */
-        char dest[32], src[64];
-        if (sscanf(operands, "%31[^,], %63s", dest, src) == 2) {
-            E9IRValue *dest_val = NULL;
-            E9IRValue *src_val = NULL;
-
-            /* Parse destination */
-            for (int i = 0; i < 16; i++) {
-                if (strcmp(dest, x64_reg_names[i]) == 0 ||
-                    (dest[0] == 'e' && strcmp(dest + 1, x64_reg_names[i] + 1) == 0)) {
-                    dest_val = e9_ir_reg(dc, i);
-                    break;
-                }
-            }
-
-            /* Parse source */
-            if (src[0] == '0' && src[1] == 'x') {
-                src_val = e9_ir_const(dc, strtoll(src, NULL, 16), 64);
-            } else if (isdigit(src[0]) || src[0] == '-') {
-                src_val = e9_ir_const(dc, strtoll(src, NULL, 10), 64);
-            } else {
-                for (int i = 0; i < 16; i++) {
-                    if (strcmp(src, x64_reg_names[i]) == 0 ||
-                        (src[0] == 'e' && strcmp(src + 1, x64_reg_names[i] + 1) == 0)) {
-                        src_val = e9_ir_reg(dc, i);
-                        break;
-                    }
-                }
-            }
-
-            stmt->dest = dest_val;
-            stmt->value = src_val;
-        }
+    /* ========== Data Movement ========== */
+    
+    /* mov variants */
+    if (mnemonic_is(mnemonic, "mov") || mnemonic_is(mnemonic, "movabs")) {
+        return lift_mov_op(dc, insn, false);
     }
-    /* add instruction */
-    else if (strcmp(mnemonic, "add") == 0 || strcmp(mnemonic, "addq") == 0 ||
-             strcmp(mnemonic, "addl") == 0) {
-        char dest[32], src[64];
-        if (sscanf(operands, "%31[^,], %63s", dest, src) == 2) {
-            E9IRValue *dest_val = NULL;
-            E9IRValue *src_val = NULL;
-
-            for (int i = 0; i < 16; i++) {
-                if (strcmp(dest, x64_reg_names[i]) == 0) {
-                    dest_val = e9_ir_reg(dc, i);
-                    break;
-                }
-            }
-
-            if (src[0] == '0' && src[1] == 'x') {
-                src_val = e9_ir_const(dc, strtoll(src, NULL, 16), 64);
-            } else if (isdigit(src[0]) || src[0] == '-') {
-                src_val = e9_ir_const(dc, strtoll(src, NULL, 10), 64);
-            } else {
-                for (int i = 0; i < 16; i++) {
-                    if (strcmp(src, x64_reg_names[i]) == 0) {
-                        src_val = e9_ir_reg(dc, i);
-                        break;
-                    }
-                }
-            }
-
-            if (dest_val && src_val) {
-                stmt->dest = e9_ir_reg(dc, dest_val->reg);
-                stmt->value = e9_ir_binary(dc, E9_IR_ADD, dest_val, src_val);
-            }
-        }
+    /* movzx/movsx - zero/sign extend */
+    if (mnemonic_is(mnemonic, "movzx") || mnemonic_is(mnemonic, "movsx") ||
+        mnemonic_is(mnemonic, "movsxd") || mnemonic_is(mnemonic, "movzbl") ||
+        mnemonic_is(mnemonic, "movsbl") || mnemonic_is(mnemonic, "movzbq") ||
+        mnemonic_is(mnemonic, "movsbq")) {
+        return lift_mov_op(dc, insn, false);
     }
-    /* sub instruction */
-    else if (strcmp(mnemonic, "sub") == 0 || strcmp(mnemonic, "subq") == 0 ||
-             strcmp(mnemonic, "subl") == 0) {
-        char dest[32], src[64];
-        if (sscanf(operands, "%31[^,], %63s", dest, src) == 2) {
-            E9IRValue *dest_val = NULL;
-            E9IRValue *src_val = NULL;
-
-            for (int i = 0; i < 16; i++) {
-                if (strcmp(dest, x64_reg_names[i]) == 0) {
-                    dest_val = e9_ir_reg(dc, i);
-                    break;
-                }
-            }
-
-            if (src[0] == '0' && src[1] == 'x') {
-                src_val = e9_ir_const(dc, strtoll(src, NULL, 16), 64);
-            } else if (isdigit(src[0]) || src[0] == '-') {
-                src_val = e9_ir_const(dc, strtoll(src, NULL, 10), 64);
-            }
-
-            if (dest_val && src_val) {
-                stmt->dest = e9_ir_reg(dc, dest_val->reg);
-                stmt->value = e9_ir_binary(dc, E9_IR_SUB, dest_val, src_val);
-            }
-        }
+    /* lea - load effective address */
+    if (mnemonic_is(mnemonic, "lea")) {
+        return lift_mov_op(dc, insn, true);
     }
-    /* xor with self = zero */
-    else if (strcmp(mnemonic, "xor") == 0 || strcmp(mnemonic, "xorl") == 0) {
-        char dest[32], src[32];
-        if (sscanf(operands, "%31[^,], %31s", dest, src) == 2) {
-            if (strcmp(dest, src) == 0) {
-                /* xor reg, reg = 0 */
-                for (int i = 0; i < 16; i++) {
-                    if (strcmp(dest, x64_reg_names[i]) == 0 ||
-                        (dest[0] == 'e' && strcmp(dest + 1, x64_reg_names[i] + 1) == 0)) {
-                        stmt->dest = e9_ir_reg(dc, i);
+    /* push */
+    if (mnemonic_is(mnemonic, "push")) {
+        return lift_stack_op(dc, insn, true);
+    }
+    /* pop */
+    if (mnemonic_is(mnemonic, "pop")) {
+        return lift_stack_op(dc, insn, false);
+    }
+    /* xchg - exchange */
+    if (mnemonic_is(mnemonic, "xchg")) {
+        /* TODO: Implement as swap */
+        return lift_binary_op(dc, insn, E9_IR_XOR);  /* Placeholder */
+    }
+    
+    /* ========== Arithmetic ========== */
+    
+    /* add */
+    if (mnemonic_is(mnemonic, "add")) {
+        return lift_binary_op(dc, insn, E9_IR_ADD);
+    }
+    /* sub */
+    if (mnemonic_is(mnemonic, "sub")) {
+        return lift_binary_op(dc, insn, E9_IR_SUB);
+    }
+    /* adc - add with carry */
+    if (mnemonic_is(mnemonic, "adc")) {
+        return lift_binary_op(dc, insn, E9_IR_ADD);  /* TODO: Handle carry */
+    }
+    /* sbb - subtract with borrow */
+    if (mnemonic_is(mnemonic, "sbb")) {
+        return lift_binary_op(dc, insn, E9_IR_SUB);  /* TODO: Handle borrow */
+    }
+    /* inc */
+    if (mnemonic_is(mnemonic, "inc")) {
+        return lift_unary_op(dc, insn, E9_IR_ADD);  /* inc = add 1 */
+    }
+    /* dec */
+    if (mnemonic_is(mnemonic, "dec")) {
+        return lift_unary_op(dc, insn, E9_IR_SUB);  /* dec = sub 1 */
+    }
+    /* neg */
+    if (mnemonic_is(mnemonic, "neg")) {
+        return lift_unary_op(dc, insn, E9_IR_NEG);
+    }
+    /* mul/imul */
+    if (mnemonic_is(mnemonic, "imul")) {
+        return lift_muldiv_op(dc, insn, E9_IR_MUL, true);
+    }
+    if (mnemonic_is(mnemonic, "mul")) {
+        return lift_muldiv_op(dc, insn, E9_IR_MUL, false);
+    }
+    /* div/idiv */
+    if (mnemonic_is(mnemonic, "idiv")) {
+        return lift_muldiv_op(dc, insn, E9_IR_DIV, true);
+    }
+    if (mnemonic_is(mnemonic, "div")) {
+        return lift_muldiv_op(dc, insn, E9_IR_DIV, false);
+    }
+    
+    /* ========== Logic ========== */
+    
+    /* and */
+    if (mnemonic_is(mnemonic, "and")) {
+        return lift_binary_op(dc, insn, E9_IR_AND);
+    }
+    /* or */
+    if (mnemonic_is(mnemonic, "or")) {
+        return lift_binary_op(dc, insn, E9_IR_OR);
+    }
+    /* xor */
+    if (mnemonic_is(mnemonic, "xor")) {
+        /* Check for xor reg, reg = 0 optimization */
+        char dest[64], src[64];
+        if (sscanf(insn->operands, "%63[^,], %63s", dest, src) == 2) {
+            /* Trim whitespace */
+            char *d = dest, *s = src;
+            while (*d == ' ') d++;
+            while (*s == ' ') s++;
+            if (strcmp(d, s) == 0) {
+                E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+                if (!stmt) return NULL;
+                stmt->addr = insn->address;
+                E9IRValue *dest_val = parse_operand(dc, d, 64);
+                if (dest_val) {
+                    E9IRValue *ir_dest = ir_get_dest(dc, dest_val);
+                    if (ir_dest) {
+                        stmt->dest = ir_dest;
                         stmt->value = e9_ir_const(dc, 0, 64);
-                        break;
+                        return stmt;
                     }
                 }
             }
         }
+        return lift_binary_op(dc, insn, E9_IR_XOR);
     }
+    /* not */
+    if (mnemonic_is(mnemonic, "not")) {
+        return lift_unary_op(dc, insn, E9_IR_NOT);
+    }
+    /* test - like and but only sets flags */
+    if (mnemonic_is(mnemonic, "test")) {
+        return lift_cmp_op(dc, insn, E9_IR_AND);
+    }
+    /* cmp - like sub but only sets flags */
+    if (mnemonic_is(mnemonic, "cmp")) {
+        return lift_cmp_op(dc, insn, E9_IR_SUB);
+    }
+    
+    /* ========== Shifts and Rotates ========== */
+    
+    /* shl/sal */
+    if (mnemonic_is(mnemonic, "shl") || mnemonic_is(mnemonic, "sal")) {
+        return lift_shift_op(dc, insn, E9_IR_SHL);
+    }
+    /* shr */
+    if (mnemonic_is(mnemonic, "shr")) {
+        return lift_shift_op(dc, insn, E9_IR_SHR);
+    }
+    /* sar */
+    if (mnemonic_is(mnemonic, "sar")) {
+        return lift_shift_op(dc, insn, E9_IR_SAR);
+    }
+    /* rol/ror - rotates (treat as shifts for now) */
+    if (mnemonic_is(mnemonic, "rol")) {
+        return lift_shift_op(dc, insn, E9_IR_SHL);  /* TODO: Proper rotate */
+    }
+    if (mnemonic_is(mnemonic, "ror")) {
+        return lift_shift_op(dc, insn, E9_IR_SHR);  /* TODO: Proper rotate */
+    }
+    
+    /* ========== Control Flow ========== */
+    
+    /* jmp - unconditional */
+    if (mnemonic_is(mnemonic, "jmp")) {
+        return lift_jump_op(dc, insn, NULL);
+    }
+    /* Conditional jumps */
+    if (strcmp(mnemonic, "je") == 0 || strcmp(mnemonic, "jz") == 0) {
+        return lift_jump_op(dc, insn, "e");
+    }
+    if (strcmp(mnemonic, "jne") == 0 || strcmp(mnemonic, "jnz") == 0) {
+        return lift_jump_op(dc, insn, "ne");
+    }
+    if (strcmp(mnemonic, "jl") == 0 || strcmp(mnemonic, "jnge") == 0) {
+        return lift_jump_op(dc, insn, "l");
+    }
+    if (strcmp(mnemonic, "jle") == 0 || strcmp(mnemonic, "jng") == 0) {
+        return lift_jump_op(dc, insn, "le");
+    }
+    if (strcmp(mnemonic, "jg") == 0 || strcmp(mnemonic, "jnle") == 0) {
+        return lift_jump_op(dc, insn, "g");
+    }
+    if (strcmp(mnemonic, "jge") == 0 || strcmp(mnemonic, "jnl") == 0) {
+        return lift_jump_op(dc, insn, "ge");
+    }
+    if (strcmp(mnemonic, "jb") == 0 || strcmp(mnemonic, "jnae") == 0 || strcmp(mnemonic, "jc") == 0) {
+        return lift_jump_op(dc, insn, "b");
+    }
+    if (strcmp(mnemonic, "jbe") == 0 || strcmp(mnemonic, "jna") == 0) {
+        return lift_jump_op(dc, insn, "be");
+    }
+    if (strcmp(mnemonic, "ja") == 0 || strcmp(mnemonic, "jnbe") == 0) {
+        return lift_jump_op(dc, insn, "a");
+    }
+    if (strcmp(mnemonic, "jae") == 0 || strcmp(mnemonic, "jnb") == 0 || strcmp(mnemonic, "jnc") == 0) {
+        return lift_jump_op(dc, insn, "ae");
+    }
+    if (strcmp(mnemonic, "js") == 0) {
+        return lift_jump_op(dc, insn, "s");
+    }
+    if (strcmp(mnemonic, "jns") == 0) {
+        return lift_jump_op(dc, insn, "ns");
+    }
+    if (strcmp(mnemonic, "jo") == 0) {
+        return lift_jump_op(dc, insn, "o");
+    }
+    if (strcmp(mnemonic, "jno") == 0) {
+        return lift_jump_op(dc, insn, "no");
+    }
+    if (strcmp(mnemonic, "jp") == 0 || strcmp(mnemonic, "jpe") == 0) {
+        return lift_jump_op(dc, insn, "p");
+    }
+    if (strcmp(mnemonic, "jnp") == 0 || strcmp(mnemonic, "jpo") == 0) {
+        return lift_jump_op(dc, insn, "np");
+    }
+    
     /* call */
-    else if (strcmp(mnemonic, "call") == 0 || strcmp(mnemonic, "callq") == 0) {
+    if (mnemonic_is(mnemonic, "call")) {
+        E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+        if (!stmt) return NULL;
+        stmt->addr = insn->address;
+        
         E9IRValue *target = NULL;
         if (insn->target) {
-            /* Direct call - create a constant for the address */
             target = e9_ir_const(dc, insn->target, 64);
         } else {
-            /* Indirect call - parse the operand */
-            target = e9_ir_reg(dc, X64_RAX);  /* Simplified */
+            target = parse_operand(dc, insn->operands, 64);
         }
-        stmt->dest = e9_ir_reg(dc, X64_RAX);  /* Return value in rax */
+        stmt->dest = e9_ir_reg(dc, X64_RAX);
         stmt->value = e9_ir_call(dc, target, NULL, 0);
+        return stmt;
     }
+    
     /* ret */
-    else if (strcmp(mnemonic, "ret") == 0 || strcmp(mnemonic, "retq") == 0) {
+    if (mnemonic_is(mnemonic, "ret")) {
+        E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+        if (!stmt) return NULL;
+        stmt->addr = insn->address;
+        
         E9IRValue *ret_val = dc_alloc(sizeof(E9IRValue));
         if (ret_val) {
             ret_val->op = E9_IR_RET;
             ret_val->unary.operand = e9_ir_reg(dc, X64_RAX);
         }
         stmt->value = ret_val;
+        return stmt;
     }
-    /* Default: comment the instruction */
-    else {
-        /* Create a placeholder */
-        stmt->dest = NULL;
-        stmt->value = NULL;
+    
+    /* ========== Stack Frame ========== */
+    
+    /* enter - create stack frame */
+    if (mnemonic_is(mnemonic, "enter")) {
+        E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+        if (!stmt) return NULL;
+        stmt->addr = insn->address;
+        /* Simplified: push rbp; mov rbp, rsp; sub rsp, size */
+        return stmt;
     }
-
+    /* leave - destroy stack frame */
+    if (mnemonic_is(mnemonic, "leave")) {
+        E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+        if (!stmt) return NULL;
+        stmt->addr = insn->address;
+        /* Simplified: mov rsp, rbp; pop rbp */
+        return stmt;
+    }
+    
+    /* ========== Misc ========== */
+    
+    /* nop */
+    if (mnemonic_is(mnemonic, "nop")) {
+        E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+        if (!stmt) return NULL;
+        stmt->addr = insn->address;
+        /* No operation - empty statement */
+        return stmt;
+    }
+    
+    /* syscall */
+    if (strcmp(mnemonic, "syscall") == 0) {
+        E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+        if (!stmt) return NULL;
+        stmt->addr = insn->address;
+        
+        E9IRValue *syscall = dc_alloc(sizeof(E9IRValue));
+        if (syscall) {
+            syscall->op = E9_IR_CALL;
+            syscall->call.func = e9_ir_const(dc, 0, 64);  /* Syscall number in rax */
+            syscall->call.args = NULL;
+            syscall->call.num_args = 0;
+        }
+        stmt->dest = e9_ir_reg(dc, X64_RAX);
+        stmt->value = syscall;
+        return stmt;
+    }
+    
+    /* int - software interrupt */
+    if (strcmp(mnemonic, "int") == 0 || strcmp(mnemonic, "int3") == 0) {
+        E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+        if (!stmt) return NULL;
+        stmt->addr = insn->address;
+        /* Interrupt - side effect only */
+        return stmt;
+    }
+    
+    /* cdq/cqo - sign extend rax to rdx:rax */
+    if (strcmp(mnemonic, "cdq") == 0 || strcmp(mnemonic, "cqo") == 0 ||
+        strcmp(mnemonic, "cwd") == 0 || strcmp(mnemonic, "cdqe") == 0) {
+        E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+        if (!stmt) return NULL;
+        stmt->addr = insn->address;
+        /* Sign extension - rdx = (rax < 0) ? -1 : 0 */
+        stmt->dest = e9_ir_reg(dc, X64_RDX);
+        stmt->value = e9_ir_const(dc, 0, 64);  /* Simplified */
+        return stmt;
+    }
+    
+    /* setcc - set byte based on condition */
+    if (strncmp(mnemonic, "set", 3) == 0) {
+        E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+        if (!stmt) return NULL;
+        stmt->addr = insn->address;
+        E9IRValue *dest = parse_operand(dc, insn->operands, 8);
+        if (dest) {
+            E9IRValue *ir_dest = ir_get_dest(dc, dest);
+            if (ir_dest) {
+                stmt->dest = ir_dest;
+                /* Condition result 0 or 1 based on flags */
+                stmt->value = e9_ir_reg(dc, X64_RFLAGS);
+            }
+        }
+        return stmt;
+    }
+    
+    /* cmovcc - conditional move */
+    if (strncmp(mnemonic, "cmov", 4) == 0) {
+        /* Treat as regular mov for now */
+        return lift_mov_op(dc, insn, false);
+    }
+    
+    /* ========== Default: Unhandled ========== */
+    
+    E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+    if (!stmt) return NULL;
+    stmt->addr = insn->address;
+    stmt->dest = NULL;
+    stmt->value = NULL;
     return stmt;
 }
 

@@ -299,12 +299,14 @@ static int op_precedence(E9IROp op)
     }
 }
 
-/* Register names for x86-64 */
+/* Register names for x86-64 (indexed by register number) */
 static const char *x64_reg_names[] = {
     "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
     "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
-    "rip", "rflags"
+    "rip", "rflags",
+    "ah", "bh", "ch", "dh"  /* High-byte registers at indices 18-21 */
 };
+#define X64_REG_COUNT 22
 
 static void emit_value(E9Decompile *dc, E9IRValue *v, int precedence)
 {
@@ -325,7 +327,7 @@ static void emit_value(E9Decompile *dc, E9IRValue *v, int precedence)
             break;
 
         case E9_IR_REG:
-            if (v->reg >= 0 && v->reg < 18) {
+            if (v->reg >= 0 && v->reg < X64_REG_COUNT) {
                 emit(dc, "_%s", x64_reg_names[v->reg]);
             } else {
                 emit(dc, "_reg%d", v->reg);
@@ -473,6 +475,11 @@ static void emit_value(E9Decompile *dc, E9IRValue *v, int precedence)
 #define X64_R15 15
 #define X64_RIP 16
 #define X64_RFLAGS 17
+/* High-byte registers - distinct from low-byte (al=0, bl=1, etc.) */
+#define X64_AH 18
+#define X64_BH 19
+#define X64_CH 20
+#define X64_DH 21
 
 /* 32-bit register names */
 static const char *x86_reg32_names[] = {
@@ -534,11 +541,11 @@ static int parse_register(const char *name, int *size_bits)
         }
     }
     
-    /* Special high byte registers */
-    if (strcmp(name, "ah") == 0) { if (size_bits) *size_bits = 8; return 0; }
-    if (strcmp(name, "bh") == 0) { if (size_bits) *size_bits = 8; return 1; }
-    if (strcmp(name, "ch") == 0) { if (size_bits) *size_bits = 8; return 2; }
-    if (strcmp(name, "dh") == 0) { if (size_bits) *size_bits = 8; return 3; }
+    /* Special high byte registers - use distinct indices to avoid ambiguity with al/bl/cl/dl */
+    if (strcmp(name, "ah") == 0) { if (size_bits) *size_bits = 8; return X64_AH; }
+    if (strcmp(name, "bh") == 0) { if (size_bits) *size_bits = 8; return X64_BH; }
+    if (strcmp(name, "ch") == 0) { if (size_bits) *size_bits = 8; return X64_CH; }
+    if (strcmp(name, "dh") == 0) { if (size_bits) *size_bits = 8; return X64_DH; }
     
     /* Special registers - rip and rflags */
     if (strcmp(name, "rip") == 0) { if (size_bits) *size_bits = 64; return X64_RIP; }
@@ -560,10 +567,7 @@ static E9IRValue *parse_operand(E9Decompile *dc, const char *op, int default_siz
     /* Skip leading whitespace */
     while (*op == ' ' || *op == '\t') op++;
     
-    /* Remove AT&T prefix */
-    if (op[0] == '%') op++;
-    
-    /* Check for register */
+    /* Check for register (parse_register handles AT&T % prefix internally) */
     int size = default_size;
     int reg = parse_register(op, &size);
     if (reg >= 0) {
@@ -624,6 +628,7 @@ static int ir_value_get_reg(E9IRValue *v)
  */
 static E9IRValue *ir_get_dest(E9Decompile *dc, E9IRValue *operand)
 {
+    (void)dc;  /* Reserved for future use (memory destination handling) */
     if (!operand) return NULL;
     
     if (operand->op == E9_IR_REG) {

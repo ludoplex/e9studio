@@ -266,13 +266,15 @@ jobs:
           echo "E9Studio Test Build" > .cosmo/README
           echo "test" > .cosmo/VERSION
           
-          # Copy WASM modules if available
+          # Copy WASM modules if available (use nullglob to handle no matches gracefully)
+          shopt -s nullglob
           for wasm in build/*.wasm src/e9patch/wasm/*.wasm; do
             if [ -f "$wasm" ]; then
               echo "Including $(basename $wasm) in ZipOS"
               cp "$wasm" .cosmo/
             fi
           done
+          shopt -u nullglob
           
           zip -r resources.zip .cosmo/
           cat resources.zip >> build/e9studio.com

@@ -265,6 +265,7 @@ E9Window *e9gui_create_window(const E9WindowConfig *config)
     }
 
     strncpy(win->title, config->title ? config->title : "E9Studio", sizeof(win->title) - 1);
+    win->title[sizeof(win->title) - 1] = '\0';  /* Ensure null-termination */
     win->width = config->width > 0 ? config->width : 1024;
     win->height = config->height > 0 ? config->height : 768;
     win->should_close = false;
@@ -338,6 +339,7 @@ void e9gui_window_set_title(E9Window *win, const char *title)
 {
     if (!win || !title) return;
     strncpy(win->title, title, sizeof(win->title) - 1);
+    win->title[sizeof(win->title) - 1] = '\0';
     /* TODO: Update native window title */
 }
 
@@ -385,6 +387,7 @@ E9Panel *e9gui_create_panel(E9Window *win, const char *id, E9PanelType type)
     if (!panel) return NULL;
 
     strncpy(panel->id, id, sizeof(panel->id) - 1);
+    panel->id[sizeof(panel->id) - 1] = '\0';
     panel->type = type;
     panel->dock = E9_DOCK_CENTER;
     panel->visible = true;
@@ -406,6 +409,7 @@ E9Panel *e9gui_create_panel(E9Window *win, const char *id, E9PanelType type)
     };
     if (type < sizeof(default_titles) / sizeof(default_titles[0])) {
         strncpy(panel->title, default_titles[type], sizeof(panel->title) - 1);
+        panel->title[sizeof(panel->title) - 1] = '\0';
     }
 
     /* Add to window's panel list */
@@ -435,6 +439,7 @@ void e9gui_panel_set_title(E9Panel *panel, const char *title)
 {
     if (panel && title) {
         strncpy(panel->title, title, sizeof(panel->title) - 1);
+        panel->title[sizeof(panel->title) - 1] = '\0';
     }
 }
 

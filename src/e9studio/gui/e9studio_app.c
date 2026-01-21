@@ -64,15 +64,16 @@ static void buffer_destroy(E9Buffer *buf)
     }
 }
 
-static void buffer_ensure_gap(E9Buffer *buf, size_t required)
+/* Returns 0 on success, -1 on allocation failure */
+static int buffer_ensure_gap(E9Buffer *buf, size_t required)
 {
     size_t gap_size = buf->gap_end - buf->gap_start;
-    if (gap_size >= required) return;
+    if (gap_size >= required) return 0;
 
     /* Resize buffer */
     size_t new_capacity = buf->capacity + required + GAP_SIZE;
     char *new_data = malloc(new_capacity);
-    if (!new_data) return;
+    if (!new_data) return -1;  /* Signal allocation failure */
 
     /* Copy data before gap */
     memcpy(new_data, buf->data, buf->gap_start);
@@ -85,6 +86,7 @@ static void buffer_ensure_gap(E9Buffer *buf, size_t required)
     buf->data = new_data;
     buf->gap_end = new_capacity - after_gap;
     buf->capacity = new_capacity;
+    return 0;
 }
 
 static void buffer_move_gap(E9Buffer *buf, size_t pos)
@@ -108,16 +110,18 @@ static void buffer_move_gap(E9Buffer *buf, size_t pos)
     }
 }
 
-static void buffer_insert(E9Buffer *buf, size_t pos, const char *text, size_t len)
+/* Returns 0 on success, -1 on allocation failure */
+static int buffer_insert(E9Buffer *buf, size_t pos, const char *text, size_t len)
 {
     if (pos > buf->size) pos = buf->size;
 
-    buffer_ensure_gap(buf, len);
+    if (buffer_ensure_gap(buf, len) != 0) return -1;
     buffer_move_gap(buf, pos);
 
     memcpy(buf->data + buf->gap_start, text, len);
     buf->gap_start += len;
     buf->size += len;
+    return 0;
 }
 
 static void buffer_delete(E9Buffer *buf, size_t pos, size_t len)
@@ -322,10 +326,16 @@ char *e9editor_get_selection(E9EditorState *ed, size_t *len)
     size_t sel_len = end - start;
 
     char *buf = malloc(sel_len + 1);
-    if (!buf) return NULL;
+    if (!buf) {
+        if (len) *len = 0;
+        return NULL;
+    }
 
-    /* TODO: Extract selection from buffer */
-    if (len) *len = sel_len;
+    /* TODO: Extract selection from buffer - for now return empty string */
+    /* This is a stub implementation; full implementation would extract
+     * text from the gap buffer between start and end positions */
+    buf[0] = '\0';
+    if (len) *len = 0;  /* Return 0 until properly implemented */
     return buf;
 }
 
@@ -373,6 +383,7 @@ int e9editor_load_file(E9EditorState *ed, const char *path)
     free(data);
 
     strncpy(ed->file_path, path, sizeof(ed->file_path) - 1);
+    ed->file_path[sizeof(ed->file_path) - 1] = '\0';
     ed->language = e9editor_detect_language(path);
     ed->dirty = 0;
 
@@ -400,6 +411,7 @@ int e9editor_save_file(E9EditorState *ed, const char *path)
     free(data);
 
     strncpy(ed->file_path, path, sizeof(ed->file_path) - 1);
+    ed->file_path[sizeof(ed->file_path) - 1] = '\0';
     ed->dirty = 0;
 
     return 0;
@@ -419,15 +431,19 @@ int e9app_init(E9AppState *app)
     app->running = 1;
     app->gui_mode = 0;  /* CLI by default */
 
-    /* Set default build commands */
+    /* Set default build commands - memset already zeroed, but ensure null-termination */
     strncpy(app->build.build_cmd, "cosmocc -O2 -o {n}.com {e}",
             sizeof(app->build.build_cmd) - 1);
+    app->build.build_cmd[sizeof(app->build.build_cmd) - 1] = '\0';
     strncpy(app->build.run_cmd, "./{n}.com",
             sizeof(app->build.run_cmd) - 1);
+    app->build.run_cmd[sizeof(app->build.run_cmd) - 1] = '\0';
     strncpy(app->build.clean_cmd, "rm -f {n}.com",
             sizeof(app->build.clean_cmd) - 1);
+    app->build.clean_cmd[sizeof(app->build.clean_cmd) - 1] = '\0';
     strncpy(app->build.compiler, "cosmocc",
             sizeof(app->build.compiler) - 1);
+    app->build.compiler[sizeof(app->build.compiler) - 1] = '\0';
 
     /* Create initial editor */
     e9app_new_editor(app);
@@ -687,6 +703,7 @@ int e9menu_load_ini(E9MenuSet *menus, const char *path)
                 current_menu = &menus->menus[menus->menu_count++];
                 memset(current_menu, 0, sizeof(E9GuiMenu));
                 strncpy(current_menu->label, s, sizeof(current_menu->label) - 1);
+                current_menu->label[sizeof(current_menu->label) - 1] = '\0';
             }
         } else if (current_menu) {
             /* Menu item */
@@ -709,7 +726,9 @@ int e9menu_load_ini(E9MenuSet *menus, const char *path)
                 E9GuiMenuItem *item = &current_menu->items[current_menu->item_count++];
                 memset(item, 0, sizeof(E9GuiMenuItem));
                 strncpy(item->label, label, sizeof(item->label) - 1);
+                item->label[sizeof(item->label) - 1] = '\0';
                 strncpy(item->command, command, sizeof(item->command) - 1);
+                item->command[sizeof(item->command) - 1] = '\0';
                 item->enabled = true;
             } else if (s[0] == '-') {
                 /* Separator */
@@ -725,6 +744,7 @@ int e9menu_load_ini(E9MenuSet *menus, const char *path)
                 E9GuiMenuItem *item = &current_menu->items[current_menu->item_count++];
                 memset(item, 0, sizeof(E9GuiMenuItem));
                 strncpy(item->label, "-", sizeof(item->label) - 1);
+                item->label[sizeof(item->label) - 1] = '\0';
             }
         }
     }
@@ -846,14 +866,19 @@ int e9build_load_config(E9BuildConfig *build, const char *path)
 
         if (strcmp(key, "build_cmd") == 0) {
             strncpy(build->build_cmd, value, sizeof(build->build_cmd) - 1);
+            build->build_cmd[sizeof(build->build_cmd) - 1] = '\0';
         } else if (strcmp(key, "run_cmd") == 0) {
             strncpy(build->run_cmd, value, sizeof(build->run_cmd) - 1);
+            build->run_cmd[sizeof(build->run_cmd) - 1] = '\0';
         } else if (strcmp(key, "clean_cmd") == 0) {
             strncpy(build->clean_cmd, value, sizeof(build->clean_cmd) - 1);
+            build->clean_cmd[sizeof(build->clean_cmd) - 1] = '\0';
         } else if (strcmp(key, "compiler") == 0) {
             strncpy(build->compiler, value, sizeof(build->compiler) - 1);
+            build->compiler[sizeof(build->compiler) - 1] = '\0';
         } else if (strcmp(key, "flags") == 0) {
             strncpy(build->flags, value, sizeof(build->flags) - 1);
+            build->flags[sizeof(build->flags) - 1] = '\0';
         }
     }
 

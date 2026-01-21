@@ -12,7 +12,7 @@
 #   - Set COSMOCC_PATH if not in /opt/cosmo
 #########################################################################
 
-.PHONY: all test clean vendor native
+.PHONY: all test clean vendor native gui cli wasm binaryen
 
 # Compiler paths (can be overridden with CC=gcc AR=ar for native builds)
 COSMOCC_PATH ?= /opt/cosmo
@@ -29,6 +29,7 @@ endif
 # Flags
 CFLAGS = -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_XOPEN_SOURCE=700
 CFLAGS += -I src/e9patch
+CFLAGS += -I src/e9studio/gui
 CFLAGS += -I src/e9patch/vendor
 CFLAGS += -I src/e9patch/wasm
 CFLAGS += -I src/e9patch/analysis
@@ -68,14 +69,24 @@ WAMR_SRCS = \
 IDE_SRCS = \
     src/e9patch/ide/e9ide_protocol.c
 
-# E9Studio main sources
+# E9Studio main sources (TUI)
 E9STUDIO_SRCS = \
     src/e9patch/wasm/e9wasm_host.c \
     src/e9patch/wasm/e9studio.c
 
+# GUI Framework sources (tedit-cosmo inspired)
+GUI_SRCS = \
+    src/e9studio/gui/e9studio_gui.c \
+    src/e9studio/gui/e9studio_app.c \
+    src/e9studio/gui/e9studio_gui_main.c \
+    src/e9studio/gui/platform/e9gui_cli.c
+
 # All sources
 ALL_SRCS = $(VENDOR_SRCS) $(ANALYSIS_SRCS) $(WAMR_SRCS) $(IDE_SRCS) $(E9STUDIO_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)
+
+# GUI sources
+GUI_OBJS = $(GUI_SRCS:.c=.o)
 
 # Output
 BUILD_DIR = build
@@ -124,6 +135,36 @@ $(OUTPUT): $(BUILD_DIR)/libe9vendor.a $(E9STUDIO_OBJS) | $(BUILD_DIR)
 	@echo ""
 
 #########################################################################
+# GUI Build (tedit-cosmo inspired)
+#########################################################################
+
+GUI_OUTPUT = $(BUILD_DIR)/e9studio-gui.com
+# Note: E9STUDIO_WITH_ANALYSIS can be added when analysis headers are available
+GUI_CFLAGS = $(CFLAGS) -DE9STUDIO_GUI_STANDALONE
+
+gui: $(GUI_OUTPUT)
+
+$(GUI_OUTPUT): $(BUILD_DIR)/libe9vendor.a $(GUI_OBJS) | $(BUILD_DIR)
+	$(CC) $(GUI_CFLAGS) $(GUI_OBJS) -L$(BUILD_DIR) -le9vendor -lm -o $@
+	@echo ""
+	@echo "╔═══════════════════════════════════════════════════════════════╗"
+	@echo "║  Built: $(GUI_OUTPUT)                                ║"
+	@echo "║                                                               ║"
+	@echo "║  E9Studio GUI (tedit-cosmo inspired)                          ║"
+	@echo "║  - CLI mode with binary analysis commands                     ║"
+	@echo "║  - TUI fallback for terminal environments                     ║"
+	@echo "║  - GUI mode when display available (planned)                  ║"
+	@echo "╚═══════════════════════════════════════════════════════════════╝"
+	@echo ""
+
+# CLI-only build (no GUI dependencies)
+cli: $(GUI_OUTPUT)
+
+# GUI object files need special flags
+src/e9studio/gui/%.o: src/e9studio/gui/%.c
+	$(CC) $(GUI_CFLAGS) -c $< -o $@
+
+#########################################################################
 # Test
 #########################################################################
 
@@ -148,6 +189,7 @@ test: $(OUTPUT)
 clean:
 	rm -rf $(BUILD_DIR)
 	rm -f $(ALL_OBJS)
+	rm -f $(GUI_OBJS)
 	rm -f src/e9patch/vendor/*.o
 	rm -f src/e9patch/vendor/libe9vendor.a
 	rm -f src/e9patch/vendor/test_vendor
@@ -155,6 +197,34 @@ clean:
 	rm -f src/e9patch/vendor/wamr/core/shared/platform/cosmopolitan/*.o
 	rm -f src/e9patch/analysis/*.o
 	rm -f src/e9patch/ide/*.o
+	rm -f src/e9studio/gui/*.o
+	rm -f src/e9studio/gui/platform/*.o
+
+#########################################################################
+# WASM Payload Build
+#########################################################################
+
+# Binaryen path: check ../binaryen (sibling), then fall back to /opt/binaryen
+BINARYEN_PATH ?= $(shell if [ -d "../binaryen" ]; then echo "../binaryen"; \
+                         elif [ -d "/opt/binaryen" ]; then echo "/opt/binaryen"; \
+                         else echo "binaryen"; fi)
+
+# Build WASM payloads for e9studio
+wasm:
+	@echo "=== Building WASM Payloads ==="
+	$(MAKE) -f src/e9studio/wasm/Makefile.wasm all BINARYEN_PATH=$(BINARYEN_PATH)
+
+# Build binaryen tools (wasm-opt, wasm-as, etc.) as APE binaries
+binaryen:
+	@echo "=== Building Binaryen Tools ==="
+	@if [ -d "$(BINARYEN_PATH)/cosmo" ]; then \
+		cd $(BINARYEN_PATH) && ./cosmo/build.sh; \
+	else \
+		echo "Binaryen not found at $(BINARYEN_PATH)"; \
+		echo "Set BINARYEN_PATH or clone it with:"; \
+		echo "  git clone https://github.com/ludoplex/binaryen.git ../binaryen"; \
+		exit 1; \
+	fi
 
 #########################################################################
 # Development
@@ -176,12 +246,16 @@ help:
 	@echo "E9Studio Build System"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all     - Build e9studio.com (APE binary)"
-	@echo "  test    - Run tests"
-	@echo "  clean   - Remove build artifacts"
-	@echo "  native  - Build with native gcc (for faster iteration)"
-	@echo "  debug   - Build with debug symbols"
-	@echo "  vendor  - Build only the vendor library"
+	@echo "  all      - Build e9studio.com (TUI binary)"
+	@echo "  gui      - Build e9studio-gui.com (tedit-cosmo GUI framework)"
+	@echo "  cli      - Build e9studio-gui.com (alias for gui)"
+	@echo "  wasm     - Build WASM payloads for e9studio"
+	@echo "  binaryen - Build binaryen tools (wasm-opt, wasm-as, etc.)"
+	@echo "  test     - Run tests"
+	@echo "  clean    - Remove build artifacts"
+	@echo "  native   - Build with native gcc (for faster iteration)"
+	@echo "  debug    - Build with debug symbols"
+	@echo "  vendor   - Build only the vendor library"
 	@echo ""
 	@echo "E9Studio is a self-contained binary analysis and patching tool."
 	@echo ""
@@ -193,6 +267,7 @@ help:
 	@echo "  - Binary identification (ELF, PE, Mach-O, APE)"
 	@echo "  - Polyglot file detection"
 	@echo "  - Terminal UI for interactive analysis"
+	@echo "  - GUI mode (tedit-cosmo inspired, extensible via INI)"
 	@echo ""
 	@echo "Variables:"
 	@echo "  COSMOCC_PATH - Path to cosmocc (default: /opt/cosmo)"

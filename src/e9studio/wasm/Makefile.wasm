@@ -1,0 +1,185 @@
+#########################################################################
+# Makefile.wasm
+# Build WASM payloads for E9Studio
+#
+# This builds WebAssembly modules that can be executed by WAMR inside
+# e9studio for binary analysis and patching operations.
+#
+# Requirements:
+#   - Binaryen (wasm-opt, wasm-as) for optimization
+#   - clang with WASM target OR emscripten for compilation
+#
+# Usage:
+#   make -f Makefile.wasm all        # Build all WASM payloads
+#   make -f Makefile.wasm optimize   # Optimize existing WASM files
+#   make -f Makefile.wasm clean      # Clean build
+#########################################################################
+
+.PHONY: all clean optimize check-tools
+
+# Tool paths - prefer sibling binaryen, then /opt, then system PATH
+BINARYEN_PATH ?= $(shell if [ -d "../../../../binaryen" ]; then echo "../../../../binaryen"; \
+                         elif [ -d "/opt/binaryen" ]; then echo "/opt/binaryen"; \
+                         else echo ""; fi)
+WASM_OPT ?= $(if $(BINARYEN_PATH),$(BINARYEN_PATH)/build-cosmo/bin/wasm-opt.com,wasm-opt)
+WASM_AS ?= $(if $(BINARYEN_PATH),$(BINARYEN_PATH)/build-cosmo/bin/wasm-as.com,wasm-as)
+
+# Alternative: use system tools if binaryen APE not built
+ifeq ($(wildcard $(WASM_OPT)),)
+WASM_OPT = wasm-opt
+WASM_AS = wasm-as
+endif
+
+# Clang WASM target (alternative to emscripten)
+CLANG ?= clang
+CLANG_WASM_FLAGS = --target=wasm32-wasi -O2 -nostdlib -Wl,--no-entry -Wl,--export-all
+
+# Emscripten (if available)
+EMCC ?= emcc
+EMCC_FLAGS = -O2 -s STANDALONE_WASM=1 -s EXPORTED_FUNCTIONS="['_malloc','_free']"
+
+# Output directory
+BUILD_DIR = ../../../build/wasm
+PAYLOAD_DIR = payloads
+
+# Source files
+WAT_SOURCES = $(wildcard $(PAYLOAD_DIR)/*.wat)
+C_SOURCES = $(wildcard $(PAYLOAD_DIR)/*.c)
+
+# Output files
+WAT_WASM = $(patsubst $(PAYLOAD_DIR)/%.wat,$(BUILD_DIR)/%.wasm,$(WAT_SOURCES))
+C_WASM = $(patsubst $(PAYLOAD_DIR)/%.c,$(BUILD_DIR)/%.wasm,$(C_SOURCES))
+
+#########################################################################
+# Main targets
+#########################################################################
+
+all: check-tools $(BUILD_DIR) $(WAT_WASM) $(C_WASM) optimize
+	@echo ""
+	@echo "=== WASM Payloads Built ==="
+	@ls -la $(BUILD_DIR)/*.wasm 2>/dev/null || echo "No WASM files built"
+	@echo ""
+
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
+
+#########################################################################
+# Check tools
+#########################################################################
+
+check-tools:
+	@echo "Checking WASM build tools..."
+	@if command -v $(WASM_OPT) >/dev/null 2>&1; then \
+		echo "  wasm-opt: $(WASM_OPT)"; \
+	else \
+		echo "  wasm-opt: NOT FOUND (optimization disabled)"; \
+	fi
+	@if command -v $(WASM_AS) >/dev/null 2>&1; then \
+		echo "  wasm-as: $(WASM_AS)"; \
+	else \
+		echo "  wasm-as: NOT FOUND (WAT compilation disabled)"; \
+	fi
+	@if command -v $(CLANG) >/dev/null 2>&1; then \
+		echo "  clang: $(CLANG)"; \
+	else \
+		echo "  clang: NOT FOUND"; \
+	fi
+	@echo ""
+
+#########################################################################
+# Build WAT files to WASM
+#########################################################################
+
+$(BUILD_DIR)/%.wasm: $(PAYLOAD_DIR)/%.wat | $(BUILD_DIR)
+	@echo "Assembling $< -> $@"
+	@if command -v $(WASM_AS) >/dev/null 2>&1; then \
+		$(WASM_AS) $< -o $@; \
+	else \
+		echo "  SKIP: wasm-as not available"; \
+	fi
+
+#########################################################################
+# Build C files to WASM (using clang with WASM target)
+#########################################################################
+
+$(BUILD_DIR)/%.wasm: $(PAYLOAD_DIR)/%.c | $(BUILD_DIR)
+	@echo "Compiling $< -> $@"
+	@if command -v $(EMCC) >/dev/null 2>&1; then \
+		$(EMCC) $(EMCC_FLAGS) $< -o $@; \
+	elif $(CLANG) --version | grep -q "clang"; then \
+		$(CLANG) $(CLANG_WASM_FLAGS) $< -o $@ 2>/dev/null || \
+		echo "  SKIP: WASM target not available in clang"; \
+	else \
+		echo "  SKIP: No WASM compiler available"; \
+	fi
+
+#########################################################################
+# Optimize all WASM files
+#########################################################################
+
+optimize:
+	@echo "Optimizing WASM files..."
+	@if command -v $(WASM_OPT) >/dev/null 2>&1; then \
+		for f in $(BUILD_DIR)/*.wasm; do \
+			if [ -f "$$f" ]; then \
+				echo "  Optimizing $$f"; \
+				$(WASM_OPT) -O3 "$$f" -o "$$f.opt" && mv "$$f.opt" "$$f"; \
+			fi \
+		done \
+	else \
+		echo "  SKIP: wasm-opt not available"; \
+	fi
+
+#########################################################################
+# Clean
+#########################################################################
+
+clean:
+	rm -rf $(BUILD_DIR)
+
+#########################################################################
+# Create example payloads
+#########################################################################
+
+examples: $(BUILD_DIR)
+	@echo "Creating example WASM payloads..."
+	@mkdir -p $(PAYLOAD_DIR)
+	@# Create a simple NOP payload
+	@echo '(module' > $(PAYLOAD_DIR)/nop.wat
+	@echo '  (func (export "nop"))' >> $(PAYLOAD_DIR)/nop.wat
+	@echo ')' >> $(PAYLOAD_DIR)/nop.wat
+	@# Create a print payload
+	@echo '(module' > $(PAYLOAD_DIR)/print.wat
+	@echo '  (import "env" "print_str" (func $$print (param i32 i32)))' >> $(PAYLOAD_DIR)/print.wat
+	@echo '  (memory (export "memory") 1)' >> $(PAYLOAD_DIR)/print.wat
+	@echo '  (data (i32.const 0) "Hello from WASM!")' >> $(PAYLOAD_DIR)/print.wat
+	@echo '  (func (export "entry")' >> $(PAYLOAD_DIR)/print.wat
+	@echo '    i32.const 0  ;; string offset' >> $(PAYLOAD_DIR)/print.wat
+	@echo '    i32.const 16 ;; string length' >> $(PAYLOAD_DIR)/print.wat
+	@echo '    call $$print' >> $(PAYLOAD_DIR)/print.wat
+	@echo '  )' >> $(PAYLOAD_DIR)/print.wat
+	@echo ')' >> $(PAYLOAD_DIR)/print.wat
+	@echo "Created example payloads in $(PAYLOAD_DIR)/"
+
+#########################################################################
+# Help
+#########################################################################
+
+help:
+	@echo "E9Studio WASM Payload Build System"
+	@echo ""
+	@echo "Targets:"
+	@echo "  all       - Build all WASM payloads"
+	@echo "  optimize  - Optimize existing WASM files with wasm-opt"
+	@echo "  examples  - Create example payload templates"
+	@echo "  clean     - Remove built files"
+	@echo ""
+	@echo "Tool Paths (can be overridden):"
+	@echo "  BINARYEN_PATH=$(BINARYEN_PATH)"
+	@echo "  WASM_OPT=$(WASM_OPT)"
+	@echo "  WASM_AS=$(WASM_AS)"
+	@echo ""
+	@echo "WASM payloads are executed by WAMR inside e9studio for:"
+	@echo "  - Custom analysis passes"
+	@echo "  - Binary instrumentation"
+	@echo "  - Patch generation"

@@ -1,0 +1,108 @@
+; E9Studio Menu Configuration
+; Based on tedit-cosmo extensibility philosophy
+;
+; Format:
+;   [&MenuName]        - Menu section (& for keyboard accelerator)
+;   Item Label,command - Menu item
+;   -                  - Separator
+;
+; Variables:
+;   {e} - Current file path
+;   {n} - File name without extension
+;   {p} - Project directory
+;   {b} - Binary/exe directory
+;   {a} - Current address (hex)
+;   {f} - Current function name
+
+[&File]
+New,new
+Open...,open
+Open Binary...,load
+-
+Save,save
+Save As...,saveas
+-
+Recent Files,recent
+-
+Exit,quit
+
+[&Edit]
+Undo,undo
+Redo,redo
+-
+Cut,cut
+Copy,copy
+Paste,paste
+-
+Select All,selectall
+-
+Find...,find
+Replace...,replace
+Go to Line...,goto
+
+[&Analysis]
+Load Binary...,load
+Binary Info,info
+-
+Symbols,symbols
+Functions,functions
+Strings,strings
+-
+Entropy Analysis,entropy
+Cross-References,xrefs
+
+[&View]
+Disassembly,disasm
+Decompiled Code,decompile
+Hex Dump,hex
+-
+Symbol Table,symbols
+Function List,functions
+Console,console
+-
+Toggle Fullscreen,fullscreen
+
+[&Navigate]
+Go to Address...,goto
+Go to Function...,gotofunc
+-
+Next Function,nextfunc
+Previous Function,prevfunc
+-
+Back,back
+Forward,forward
+
+[&Patch]
+Patch Bytes...,patch
+NOP Instruction,nop
+Inject Assembly...,inject
+-
+Apply Patches,apply
+Revert Patches,revert
+-
+Export Patched Binary...,export
+
+[&Build]
+Compile,cosmocc -O2 -o {n}.com {e}
+Compile (Debug),cosmocc -g -O0 -o {n}.com {e}
+-
+Run,./{n}.com
+Build & Run,cosmocc -O2 -o {n}.com {e} && ./{n}.com
+-
+Clean,rm -f {n}.com {n}.o
+
+[&Tools]
+Disassemble at Address,disasm {a}
+Decompile Function,decompile {f}
+-
+Extract Strings,strings
+Run objdump,objdump -d {e}
+Run readelf,readelf -a {e}
+-
+Format Code,clang-format -i {e}
+Count Lines,wc -l {e}
+
+[&Help]
+Help,help
+-
+About E9Studio,about

@@ -70,6 +70,7 @@ jobs:
       - name: Build e9studio (APE)
         run: |
           make -f Makefile.e9studio CC=$GITHUB_WORKSPACE/cosmocc/bin/cosmocc AR=$GITHUB_WORKSPACE/cosmocc/bin/cosmoar all
+          make -f Makefile.e9studio CC=$GITHUB_WORKSPACE/cosmocc/bin/cosmocc AR=$GITHUB_WORKSPACE/cosmocc/bin/cosmoar gui
 
       - name: Run vendor library tests
         run: |
@@ -131,11 +132,13 @@ jobs:
           ./build/e9studio.com --self-test || echo "Self-test had issues (non-fatal)"
           echo "Linux x86_64 verification: COMPLETE"
 
-      - name: Upload APE artifact
+      - name: Upload APE artifacts
         uses: actions/upload-artifact@v4
         with:
           name: e9studio-ape
-          path: build/e9studio.com
+          path: |
+            build/e9studio.com
+            build/e9studio-gui.com
 
   # Alternative build using setup-cosmocc action (experimental)
   build-ape-action:
@@ -292,9 +295,11 @@ jobs:
         with:
           name: e9studio-ape
 
-      - name: Upload release asset
+      - name: Upload release assets
         uses: softprops/action-gh-release@v1
         with:
-          files: e9studio.com
+          files: |
+            e9studio.com
+            e9studio-gui.com
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

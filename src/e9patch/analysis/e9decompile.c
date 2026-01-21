@@ -299,12 +299,14 @@ static int op_precedence(E9IROp op)
     }
 }
 
-/* Register names for x86-64 */
+/* Register names for x86-64 (indexed by register number) */
 static const char *x64_reg_names[] = {
     "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
     "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
-    "rip", "rflags"
+    "rip", "rflags",
+    "ah", "bh", "ch", "dh"  /* High-byte registers at indices 18-21 */
 };
+#define X64_REG_COUNT 22
 
 static void emit_value(E9Decompile *dc, E9IRValue *v, int precedence)
 {
@@ -325,7 +327,7 @@ static void emit_value(E9Decompile *dc, E9IRValue *v, int precedence)
             break;
 
         case E9_IR_REG:
-            if (v->reg >= 0 && v->reg < 18) {
+            if (v->reg >= 0 && v->reg < X64_REG_COUNT) {
                 emit(dc, "_%s", x64_reg_names[v->reg]);
             } else {
                 emit(dc, "_reg%d", v->reg);
@@ -471,6 +473,282 @@ static void emit_value(E9Decompile *dc, E9IRValue *v, int precedence)
 #define X64_R13 13
 #define X64_R14 14
 #define X64_R15 15
+#define X64_RIP 16
+#define X64_RFLAGS 17
+/* High-byte registers - distinct from low-byte (al=0, bl=1, etc.) */
+#define X64_AH 18
+#define X64_BH 19
+#define X64_CH 20
+#define X64_DH 21
+
+/* 32-bit register names */
+static const char *x86_reg32_names[] = {
+    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp",
+    "r8d", "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d"
+};
+
+/* 16-bit register names */
+static const char *x86_reg16_names[] = {
+    "ax", "bx", "cx", "dx", "si", "di", "bp", "sp",
+    "r8w", "r9w", "r10w", "r11w", "r12w", "r13w", "r14w", "r15w"
+};
+
+/* 8-bit register names */
+static const char *x86_reg8_names[] = {
+    "al", "bl", "cl", "dl", "sil", "dil", "bpl", "spl",
+    "r8b", "r9b", "r10b", "r11b", "r12b", "r13b", "r14b", "r15b"
+};
+
+/*
+ * Parse a register name and return its index and size in bits
+ */
+static int parse_register(const char *name, int *size_bits)
+{
+    if (!name || !*name) return -1;
+    
+    /* Remove leading % if present (AT&T syntax) */
+    if (name[0] == '%') name++;
+    
+    /* 64-bit registers */
+    for (int i = 0; i < 16; i++) {
+        if (strcmp(name, x64_reg_names[i]) == 0) {
+            if (size_bits) *size_bits = 64;
+            return i;
+        }
+    }
+    
+    /* 32-bit registers */
+    for (int i = 0; i < 16; i++) {
+        if (strcmp(name, x86_reg32_names[i]) == 0) {
+            if (size_bits) *size_bits = 32;
+            return i;
+        }
+    }
+    
+    /* 16-bit registers */
+    for (int i = 0; i < 16; i++) {
+        if (strcmp(name, x86_reg16_names[i]) == 0) {
+            if (size_bits) *size_bits = 16;
+            return i;
+        }
+    }
+    
+    /* 8-bit registers */
+    for (int i = 0; i < 16; i++) {
+        if (strcmp(name, x86_reg8_names[i]) == 0) {
+            if (size_bits) *size_bits = 8;
+            return i;
+        }
+    }
+    
+    /* Special high byte registers - use distinct indices to avoid ambiguity with al/bl/cl/dl */
+    if (strcmp(name, "ah") == 0) { if (size_bits) *size_bits = 8; return X64_AH; }
+    if (strcmp(name, "bh") == 0) { if (size_bits) *size_bits = 8; return X64_BH; }
+    if (strcmp(name, "ch") == 0) { if (size_bits) *size_bits = 8; return X64_CH; }
+    if (strcmp(name, "dh") == 0) { if (size_bits) *size_bits = 8; return X64_DH; }
+    
+    /* Special registers - rip and rflags */
+    if (strcmp(name, "rip") == 0) { if (size_bits) *size_bits = 64; return X64_RIP; }
+    if (strcmp(name, "rflags") == 0 || strcmp(name, "eflags") == 0) {
+        if (size_bits) *size_bits = 64;
+        return X64_RFLAGS;
+    }
+    
+    return -1;
+}
+
+/*
+ * Parse an operand (register, immediate, or memory reference)
+ */
+static E9IRValue *parse_operand(E9Decompile *dc, const char *op, int default_size)
+{
+    if (!op || !*op) return NULL;
+    
+    /* Skip leading whitespace */
+    while (*op == ' ' || *op == '\t') op++;
+    
+    /* Check for register (parse_register handles AT&T % prefix internally) */
+    int size = default_size;
+    int reg = parse_register(op, &size);
+    if (reg >= 0) {
+        return e9_ir_reg(dc, reg);
+    }
+    
+    /* Check for immediate ($ prefix for AT&T, or number for Intel) */
+    const char *num = op;
+    if (num[0] == '$') num++;  /* AT&T immediate prefix */
+    
+    /* Use strtoll with base 0 so it handles optional sign and 0x/0 prefixes.
+       This correctly parses: 123, -123, 0x1a, -0x1a, 0777, etc. */
+    char *endptr = NULL;
+    long long imm = strtoll(num, &endptr, 0);
+    if (endptr != num && *endptr == '\0') {
+        return e9_ir_const(dc, imm, size);
+    }
+    
+    /* Check for memory operand [base + index*scale + disp] or disp(base,index,scale) */
+    if (op[0] == '[' || strchr(op, '(') != NULL) {
+        /* Memory operand - create a load placeholder.
+         * TODO: Implement full memory operand parsing (base, index, scale, displacement).
+         * Currently returns a load from a symbolic "MEM" address marker.
+         * IR consumers should check for E9_IR_LOAD op and handle appropriately. */
+        E9IRValue *mem_marker = dc_alloc(sizeof(E9IRValue));
+        if (!mem_marker) return NULL;
+        mem_marker->op = E9_IR_GLOBAL;
+        mem_marker->var.name = dc_strdup(op);  /* Preserve original for debugging */
+        return e9_ir_load(dc, mem_marker, size / 8);
+    }
+    
+    /* Symbol reference */
+    E9IRValue *v = dc_alloc(sizeof(E9IRValue));
+    if (!v) return NULL;
+    v->op = E9_IR_GLOBAL;
+    v->var.name = dc_strdup(op);
+    return v;
+}
+
+/*
+ * Check if an E9IRValue represents a register.
+ * Returns the register number if it is a register, or -1 otherwise.
+ * Note: Reserved for future use in more complex lifting scenarios.
+ */
+static int ir_value_get_reg(E9IRValue *v) __attribute__((unused));
+static int ir_value_get_reg(E9IRValue *v)
+{
+    if (!v) return -1;
+    if (v->op == E9_IR_REG) return v->reg;
+    return -1;
+}
+
+/*
+ * Helper to get the destination for an IR statement.
+ * For register operands, returns the register as destination.
+ * For memory operands, returns the memory address (for store operations).
+ * Returns NULL if the operand cannot be used as a destination.
+ */
+static E9IRValue *ir_get_dest(E9Decompile *dc, E9IRValue *operand)
+{
+    (void)dc;  /* Reserved for future use (memory destination handling) */
+    if (!operand) return NULL;
+    
+    if (operand->op == E9_IR_REG) {
+        /* Register destination - return as-is */
+        return operand;
+    }
+    
+    if (operand->op == E9_IR_LOAD) {
+        /* Memory destination - for now, we don't support memory destinations.
+         * TODO: Implement store operations for memory destinations.
+         * Return NULL to signal that this operation cannot be lifted yet. */
+        return NULL;
+    }
+    
+    /* Other operand types (const, global) cannot be destinations */
+    return NULL;
+}
+
+/*
+ * Create an IR statement for a binary operation (add, sub, and, or, xor, etc.)
+ */
+static E9IRStmt *lift_binary_op(E9Decompile *dc, E9Instruction *insn, E9IROp op)
+{
+    E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+    if (!stmt) return NULL;
+    stmt->addr = insn->address;
+    
+    char dest[64], src[128];
+    if (sscanf(insn->operands, "%63[^,], %127s", dest, src) == 2) {
+        E9IRValue *dest_val = parse_operand(dc, dest, 64);
+        E9IRValue *src_val = parse_operand(dc, src, 64);
+        
+        if (dest_val && src_val) {
+            /* Check if destination is a valid target (register or memory) */
+            E9IRValue *ir_dest = ir_get_dest(dc, dest_val);
+            if (!ir_dest) {
+                /* Cannot lift: destination is not a register or supported memory.
+                 * Leave stmt->dest/value as NULL to signal unhandled instruction. */
+                return stmt;
+            }
+            stmt->dest = ir_dest;
+            stmt->value = e9_ir_binary(dc, op, dest_val, src_val);
+        }
+    }
+    
+    return stmt;
+}
+
+/*
+ * Create an IR statement for a shift operation
+ */
+static E9IRStmt *lift_shift_op(E9Decompile *dc, E9Instruction *insn, E9IROp op)
+{
+    E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+    if (!stmt) return NULL;
+    stmt->addr = insn->address;
+    
+    char dest[64], shift[32];
+    if (sscanf(insn->operands, "%63[^,], %31s", dest, shift) == 2) {
+        E9IRValue *dest_val = parse_operand(dc, dest, 64);
+        E9IRValue *shift_val = parse_operand(dc, shift, 8);
+        
+        if (dest_val && shift_val) {
+            /* Check if destination is a valid target (register or memory) */
+            E9IRValue *ir_dest = ir_get_dest(dc, dest_val);
+            if (!ir_dest) {
+                /* Cannot lift: destination is not a register or supported memory */
+                return stmt;
+            }
+            stmt->dest = ir_dest;
+            stmt->value = e9_ir_binary(dc, op, dest_val, shift_val);
+        }
+    } else {
+        /* Single operand form - shift by 1 */
+        E9IRValue *dest_val = parse_operand(dc, insn->operands, 64);
+        if (dest_val) {
+            /* Check if destination is a valid target */
+            E9IRValue *ir_dest = ir_get_dest(dc, dest_val);
+            if (!ir_dest) {
+                return stmt;
+            }
+            stmt->dest = ir_dest;
+            stmt->value = e9_ir_binary(dc, op, dest_val, e9_ir_const(dc, 1, 8));
+        }
+    }
+    
+    return stmt;
+}
+
+/*
+ * Create an IR statement for a unary operation (not, neg, inc, dec)
+ */
+static E9IRStmt *lift_unary_op(E9Decompile *dc, E9Instruction *insn, E9IROp op)
+{
+    E9IRStmt *stmt = dc_alloc(sizeof(E9IRStmt));
+    if (!stmt) return NULL;
+    stmt->addr = insn->address;
+    
+    E9IRValue *operand = parse_operand(dc, insn->operands, 64);
+    if (operand) {
+        /* Check if operand is a valid destination (register or memory) */
+        E9IRValue *ir_dest = ir_get_dest(dc, operand);
+        if (!ir_dest) {
+            /* Cannot lift: operand is not a register or supported memory */
+            return stmt;
+        }
+        stmt->dest = ir_dest;
+        
+        /* inc/dec are special - add/sub 1 */
+        if (op == E9_IR_ADD) {
+            stmt->value = e9_ir_binary(dc, E9_IR_ADD, operand, e9_ir_const(dc, 1, 64));
+        } else if (op == E9_IR_SUB) {
+            stmt->value = e9_ir_binary(dc, E9_IR_SUB, operand, e9_ir_const(dc, 1, 64));
+        } else {
+            stmt->value = e9_ir_unary(dc, op, operand);
+        }
+    }
+    
+    return stmt;
+}
 
 static E9IRStmt *lift_instruction(E9Decompile *dc, E9IRFunc *func, E9Instruction *insn)
 {

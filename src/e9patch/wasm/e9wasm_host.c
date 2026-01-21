@@ -95,6 +95,11 @@ static void wasm_log(const char *fmt, ...)
 }
 
 /*
+ * Forward declarations
+ */
+static int zipos_is_disabled(void);
+
+/*
  * ============================================================================
  * Native host functions (callable from WASM)
  * ============================================================================
@@ -413,14 +418,42 @@ void *e9wasm_load_module(const char *path)
     uint8_t *wasm_bytes = NULL;
     size_t size = 0;
 
-    /* Try ZipOS first */
-    wasm_bytes = e9wasm_zipos_read(path, &size);
+    /* Check if this is a ZipOS path */
+    bool is_zipos_path = (strncmp(path, "/zip/", 5) == 0);
+
+    /* For ZipOS paths, first check if the file exists to avoid crash */
+    if (is_zipos_path) {
+        if (zipos_is_disabled()) {
+            wasm_log("Note: ZipOS disabled, %s not available", path);
+            wasm_log("Running in native mode (no WASM patching engine)");
+            return NULL;
+        }
+        if (!e9wasm_zipos_file_exists(path)) {
+            wasm_log("Note: %s not found in ZipOS, running in native mode", path);
+            return NULL;
+        }
+    }
+
+    /* Try ZipOS first for /zip/ paths */
+    if (is_zipos_path) {
+        wasm_bytes = e9wasm_zipos_read(path, &size);
+    }
 
     if (!wasm_bytes) {
-        /* Try filesystem */
-        int fd = open(path, O_RDONLY);
+        /* Try filesystem (for non-ZipOS paths or as fallback) */
+        const char *fs_path = path;
+        
+        /* Skip /zip/ prefix for filesystem lookup */
+        if (is_zipos_path) {
+            fs_path = path + 5;  /* Skip "/zip/" */
+        }
+        
+        int fd = open(fs_path, O_RDONLY);
         if (fd < 0) {
-            wasm_log("Cannot open module: %s", strerror(errno));
+            /* For ZipOS paths, we already logged the "native mode" message */
+            if (!is_zipos_path) {
+                wasm_log("Cannot open module: %s", strerror(errno));
+            }
             return NULL;
         }
 
@@ -686,15 +719,59 @@ const char *e9wasm_get_exe_path(void)
     return g_runtime.exe_path;
 }
 
+/*
+ * Check if ZipOS is disabled via environment variable
+ * Returns 1 if disabled, 0 otherwise
+ */
+static int zipos_is_disabled(void)
+{
+    const char *env = getenv("COSMOPOLITAN_DISABLE_ZIPOS");
+    if (env && (strcmp(env, "1") == 0 || strcmp(env, "true") == 0)) {
+        return 1;
+    }
+    return 0;
+}
+
 int e9wasm_zipos_available(void)
 {
+    /* Check if ZipOS is explicitly disabled */
+    if (zipos_is_disabled()) {
+        return 0;
+    }
+
     /* Check if /zip/ is accessible */
     struct stat st;
     return (stat("/zip", &st) == 0) ? 1 : 0;
 }
 
+/*
+ * Check if a file exists in ZipOS (safe check that doesn't crash)
+ * Returns 1 if exists, 0 otherwise
+ */
+int e9wasm_zipos_file_exists(const char *name)
+{
+    if (zipos_is_disabled()) {
+        return 0;
+    }
+
+    char full_path[512];
+    if (name[0] == '/') {
+        E9_STRCPY_SAFE(full_path, sizeof(full_path), name);
+    } else {
+        snprintf(full_path, sizeof(full_path), "/zip/%s", name);
+    }
+
+    struct stat st;
+    return (stat(full_path, &st) == 0) ? 1 : 0;
+}
+
 uint8_t *e9wasm_zipos_read(const char *name, size_t *out_size)
 {
+    /* Check if ZipOS is disabled */
+    if (zipos_is_disabled()) {
+        return NULL;
+    }
+
     char full_path[512];
 
     if (name[0] == '/') {
@@ -703,12 +780,17 @@ uint8_t *e9wasm_zipos_read(const char *name, size_t *out_size)
         snprintf(full_path, sizeof(full_path), "/zip/%s", name);
     }
 
+    /* First check if file exists to avoid potential crash on non-existent files */
+    struct stat st;
+    if (stat(full_path, &st) < 0) {
+        return NULL;
+    }
+
     int fd = open(full_path, O_RDONLY);
     if (fd < 0) {
         return NULL;
     }
 
-    struct stat st;
     if (fstat(fd, &st) < 0) {
         close(fd);
         return NULL;

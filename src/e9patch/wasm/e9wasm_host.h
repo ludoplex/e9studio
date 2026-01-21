@@ -155,13 +155,22 @@ const char *e9wasm_get_exe_path(void);
 /*
  * Check if embedded ZipOS is available
  * Returns 1 if available, 0 otherwise
+ * Note: Returns 0 if COSMOPOLITAN_DISABLE_ZIPOS=1 is set
  */
 int e9wasm_zipos_available(void);
+
+/*
+ * Check if a file exists in embedded ZipOS
+ * Returns 1 if exists, 0 otherwise
+ * This is a safe check that won't crash on non-existent files
+ */
+int e9wasm_zipos_file_exists(const char *name);
 
 /*
  * Read file from embedded ZipOS
  * Returns allocated buffer (caller must free) or NULL on error
  * Sets *out_size to file size
+ * Note: Returns NULL if COSMOPOLITAN_DISABLE_ZIPOS=1 is set
  */
 uint8_t *e9wasm_zipos_read(const char *name, size_t *out_size);
 

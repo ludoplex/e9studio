@@ -1,4 +1,4 @@
-# E9Studio GUI (cosmo-teditor)
+# E9Studio GUI (tedit-cosmo)
 
 ## Overview
 

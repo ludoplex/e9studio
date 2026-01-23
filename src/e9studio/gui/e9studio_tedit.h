@@ -175,7 +175,7 @@ E9Language e9editor_detect_language(const char *filename);
 const char *e9editor_language_name(E9Language lang);
 
 /* Edit operations */
-void e9editor_insert(E9EditorState *ed, size_t pos, const char *text, size_t len);
+int e9editor_insert(E9EditorState *ed, size_t pos, const char *text, size_t len);
 void e9editor_delete(E9EditorState *ed, size_t pos, size_t len);
 void e9editor_undo(E9EditorState *ed);
 void e9editor_redo(E9EditorState *ed);

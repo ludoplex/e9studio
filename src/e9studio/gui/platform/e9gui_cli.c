@@ -203,9 +203,10 @@ static void cmd_disasm(const char *arg)
     }
 
     /* Try as hex address first */
-    uint64_t addr = strtoull(arg, NULL, 16);
-    if (addr != 0) {
-        /* TODO: Disassemble at address */
+    char *endptr;
+    uint64_t addr = strtoull(arg, &endptr, 16);
+    if (endptr > arg && (*endptr == '\0' || isspace((unsigned char)*endptr))) {
+        /* Successfully parsed as hex address */
         printf("Disassembly at 0x%llx:\n", (unsigned long long)addr);
         e9analysis_disasm_at(g_app->binary, addr, 32);
     } else {
@@ -243,6 +244,11 @@ static void cmd_hex(const char *args)
 {
     if (!g_app->binary) {
         printf("No binary loaded.\n");
+        return;
+    }
+
+    if (!args || !args[0]) {
+        printf("Usage: hex <address> [size]\n");
         return;
     }
 

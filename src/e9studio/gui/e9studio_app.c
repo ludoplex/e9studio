@@ -212,7 +212,7 @@ int e9editor_set_text(E9EditorState *ed, const char *text, size_t len)
     ed->buffer->size = 0;
 
     /* Insert new text */
-    buffer_insert(ed->buffer, 0, text, len);
+    if (buffer_insert(ed->buffer, 0, text, len) != 0) return -1;
     ed->dirty = 0;
 
     return 0;
@@ -272,14 +272,15 @@ void e9editor_set_language(E9EditorState *ed, E9Language lang)
     if (ed) ed->language = lang;
 }
 
-void e9editor_insert(E9EditorState *ed, size_t pos, const char *text, size_t len)
+int e9editor_insert(E9EditorState *ed, size_t pos, const char *text, size_t len)
 {
-    if (!ed || !ed->buffer || !text || len == 0) return;
+    if (!ed || !ed->buffer || !text || len == 0) return -1;
 
-    buffer_insert(ed->buffer, pos, text, len);
+    if (buffer_insert(ed->buffer, pos, text, len) != 0) return -1;
     ed->dirty = 1;
 
     /* TODO: Add to history */
+    return 0;
 }
 
 void e9editor_delete(E9EditorState *ed, size_t pos, size_t len)
@@ -815,7 +816,7 @@ int e9menu_substitute_vars(char *out, size_t out_size, const char *cmd,
                 if (file_path) {
                     const char *last = strrchr(file_path, '/');
                     if (!last) last = strrchr(file_path, '\\');
-                    size_t len = last ? (size_t)(last - file_path) : 1;
+                    size_t len = last ? (size_t)(last - file_path) : 0;
                     if (out_pos + len < out_size - 1) {
                         if (len > 0) {
                             memcpy(out + out_pos, file_path, len);
@@ -886,9 +887,13 @@ int e9build_load_config(E9BuildConfig *build, const char *path)
     return 0;
 }
 
+/*
+ * SECURITY NOTE: cmd is passed directly to system(). Callers must ensure
+ * cmd is constructed only from trusted data (config files, menu definitions).
+ */
 int e9build_run_command(const char *cmd)
 {
-    if (!cmd) return -1;
+    if (!cmd || !cmd[0]) return -1;
     return system(cmd);
 }
 

@@ -282,8 +282,8 @@ upstream/e9studio/
                               |
                               v
                       +-------+-------+
-                      | process_vm_  |  <- src/e9patch/e9procmem.h
-                      | writev()     |
+                      | e9_procmem_  |  <- src/e9patch/e9procmem.h
+                      | write()      |
                       +-------+-------+
                               |
                               v

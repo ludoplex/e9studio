@@ -1,9 +1,10 @@
 /*
  * e9procmem.h - Unified Process Memory API
  *
- * Cross-platform hot-patching without ptrace:
- *   Linux:   process_vm_readv/writev (no stop required)
- *   Windows: ReadProcessMemory/WriteProcessMemory
+ * Cross-platform hot-patching without ptrace (backend chosen at run time):
+ *   Linux:   pread/pwrite on /proc/PID/mem (no stop required)
+ *   Windows: NtReadVirtualMemory/WriteProcessMemory via cosmocc's libc/nt
+ *   macOS/BSD: self only (remote access not implemented)
  *   Self:    mprotect + direct access
  *
  * ═══════════════════════════════════════════════════════════════════════════
@@ -72,8 +73,9 @@ PROCMEM_STATUS_XMACRO(X)
 
 typedef struct {
     int32_t  pid;           /* Process ID (0 = self) */
-    uint64_t handle;        /* Platform handle */
+    uint64_t handle;        /* /proc/PID/mem fd, or full 64-bit NT HANDLE */
     uint32_t flags;         /* Access flags */
+    int32_t  backend;       /* Backend that opened the handle (internal) */
     int32_t  error_code;
     char     error_msg[256];
 } E9ProcHandle;
@@ -84,7 +86,7 @@ typedef struct {
     uint32_t page_size;
     int32_t  can_remote;    /* Can patch other processes */
     int32_t  can_self;      /* Can self-patch (always 1) */
-    char     backend[32];   /* "process_vm", "win32", "mach", "self" */
+    char     backend[32];   /* "procfs", "nt", or "self" */
 } E9PlatformInfo;
 
 /* ═══════════════════════════════════════════════════════════════════════════

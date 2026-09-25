@@ -93,14 +93,14 @@ action do_shutdown {
 action start_watch {
     doc "Start file watcher"
     code {
-        // inotify_add_watch or start polling
+        // snapshot stat() of *.c / *.h (portable polling)
     }
 }
 
 action stop_watch {
     doc "Stop file watcher"
     code {
-        // inotify_rm_watch or stop polling
+        // drop the stat() snapshot
     }
 }
 
@@ -153,7 +153,7 @@ action start_patch {
 action apply_patches {
     doc "Write patches to target memory"
     code {
-        // for each patch: process_vm_writev + icache flush
+        // for each patch: e9_procmem_write (/proc/PID/mem or NT handle) + icache flush
     }
 }
 

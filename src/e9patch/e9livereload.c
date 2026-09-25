@@ -9,7 +9,7 @@
  *   - e9wasm_host.h: Memory mapping and icache flush
  *
  * Workflow:
- *   1. File change detected (inotify/kqueue/polling)
+ *   1. File change detected (portable stat() polling; same code on every OS)
  *   2. Invoke cosmocc to recompile changed .c to .o
  *   3. Use Binaryen to diff old .o vs new .o
  *   4. Convert Binaryen patches to APE file offsets via PE sections
@@ -35,10 +35,9 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
-
-#ifdef __linux__
-#include <sys/inotify.h>
-#endif
+#include <sys/wait.h>
+#include <dirent.h>
+#include <spawn.h>
 
 #include "e9livereload.h"
 #include "e9ape.h"
@@ -52,6 +51,17 @@
 #define MAX_PATCHES 256
 #define MAX_PATH_LEN 256
 #define ERROR_BUF_SIZE 512
+#define MAX_WATCHED 1024
+
+/* One watched source file: the stat() fields that change on edit/replace */
+typedef struct {
+    char name[MAX_PATH_LEN];
+    time_t mtime;
+    time_t ctime;
+    off_t size;
+    ino_t ino;
+    bool seen;
+} WatchEntry;
 
 typedef struct {
     uint32_t id;
@@ -92,11 +102,9 @@ typedef struct {
     /* APE info (from e9ape.h) */
     E9_APEInfo ape_info;
 
-    /* File watcher */
-#ifdef __linux__
-    int inotify_fd;
-    int watch_fd;
-#endif
+    /* File watcher (stat polling of *.c / *.h in source_dir) */
+    WatchEntry *watch;
+    size_t num_watch;
 
     /* Patches */
     InternalPatch patches[MAX_PATCHES];
@@ -181,6 +189,68 @@ static void ensure_cache_dir(void)
     }
 }
 
+/*
+ * Compiler invocation without a shell.
+ *
+ * Source file names come from the watched directory, so they are untrusted:
+ * building a "cc ... %s" string for system() let a file named e.g.
+ * "x;rm -rf ~;.c" run arbitrary commands. The compiler is instead spawned
+ * with an argv vector (posix_spawnp works on every OS the APE runs on, and
+ * does not depend on /bin/sh, `which` or `head`, none of which exist on
+ * Windows).
+ */
+
+#define MAX_COMPILER_ARGS 64
+
+extern char **environ;
+
+/* Split `flags` on blanks into argv[*argc...]; no quoting, no expansion. */
+static int split_flags(char *flags, char **argv, int *argc, int max)
+{
+    char *save = NULL;
+    for (char *tok = strtok_r(flags, " \t", &save); tok; tok = strtok_r(NULL, " \t", &save))
+    {
+        if (*argc >= max)
+            return -1;
+        argv[(*argc)++] = tok;
+    }
+    return 0;
+}
+
+/* Run argv[0] (PATH lookup) and wait. out_fd >= 0 receives stdout+stderr,
+ * otherwise they go to /dev/null. Returns the exit status, or -1. */
+static int run_argv(char *const argv[], int out_fd)
+{
+    posix_spawn_file_actions_t fa;
+    if (posix_spawn_file_actions_init(&fa) != 0)
+        return -1;
+    if (out_fd >= 0)
+    {
+        posix_spawn_file_actions_adddup2(&fa, out_fd, 1);
+        posix_spawn_file_actions_adddup2(&fa, out_fd, 2);
+    }
+    else
+    {
+        posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+        posix_spawn_file_actions_adddup2(&fa, 1, 2);
+    }
+
+    pid_t pid;
+    int rc = posix_spawnp(&pid, argv[0], &fa, NULL, argv, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    if (rc != 0)
+    {
+        errno = rc;
+        return -1;
+    }
+
+    int status;
+    while (waitpid(pid, &status, 0) < 0)
+        if (errno != EINTR)
+            return -1;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+}
+
 static void get_cached_object_path(const char *source, char *out, size_t out_size)
 {
     /* source: /path/to/foo.c -> cache_dir/foo.c.o */
@@ -205,19 +275,31 @@ static void get_new_object_path(const char *source, char *out, size_t out_size)
 
 static int compile_source(const char *source_path, const char *output_path)
 {
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "%s %s -c %s -o %s 2>&1",
-             g_state.compiler,
-             g_state.config.compiler_flags ? g_state.config.compiler_flags : "",
-             source_path,
-             output_path);
+    char flags[1024];
+    char *argv[MAX_COMPILER_ARGS + 6];
+    int argc = 0;
+
+    snprintf(flags, sizeof(flags), "%s",
+             g_state.config.compiler_flags ? g_state.config.compiler_flags : "");
+    argv[argc++] = g_state.compiler;
+    if (split_flags(flags, argv, &argc, MAX_COMPILER_ARGS) != 0)
+    {
+        set_error("Too many compiler flags (max %d)", MAX_COMPILER_ARGS);
+        return -1;
+    }
+    argv[argc++] = "-c";
+    argv[argc++] = (char *)source_path;
+    argv[argc++] = "-o";
+    argv[argc++] = (char *)output_path;
+    argv[argc] = NULL;
 
     dispatch_event(E9_LR_EVENT_COMPILE_START, source_path, 0, NULL, 0, 0, 0, NULL);
 
     if (g_state.config.verbose)
-        fprintf(stderr, "[livereload] Compiling: %s\n", cmd);
+        fprintf(stderr, "[livereload] Compiling: %s -c %s -o %s\n",
+                g_state.compiler, source_path, output_path);
 
-    int ret = system(cmd);
+    int ret = run_argv(argv, STDERR_FILENO);
 
     if (ret != 0)
     {
@@ -512,88 +594,127 @@ static int handle_file_change(const char *source_path)
  * File Watcher
  * ═══════════════════════════════════════════════════════════════════════ */
 
-#ifdef __linux__
-static int init_inotify(void)
+/*
+ * Portable stat() polling over *.c / *.h in source_dir.
+ *
+ * One code path for every OS the APE runs on: under cosmocc __linux__ is
+ * not defined, so a Linux-only inotify branch would never be compiled into
+ * the APE, and Windows / macOS / BSD have no inotify at all. A change is any
+ * difference in (mtime, ctime, size, inode), which also catches editors
+ * that save by writing a new file and renaming it over the old one.
+ */
+
+static bool is_source_name(const char *name)
 {
-    g_state.inotify_fd = inotify_init1(IN_NONBLOCK);
-    if (g_state.inotify_fd < 0)
+    size_t n = strlen(name);
+    return n > 2 && name[n - 2] == '.' && (name[n - 1] == 'c' || name[n - 1] == 'h');
+}
+
+static WatchEntry *find_watch(const char *name)
+{
+    for (size_t i = 0; i < g_state.num_watch; i++)
+        if (strcmp(g_state.watch[i].name, name) == 0)
+            return &g_state.watch[i];
+    return NULL;
+}
+
+/* Rescan source_dir; when report is true, call handle_file_change() for every
+ * new or modified source file. Returns the number of changes, or -1. */
+static int scan_sources(bool report)
+{
+    DIR *dir = opendir(g_state.source_dir);
+    if (!dir)
     {
-        set_error("inotify_init1 failed: %s", strerror(errno));
+        set_error("opendir(%s) failed: %s", g_state.source_dir, strerror(errno));
         return -1;
     }
 
-    g_state.watch_fd = inotify_add_watch(g_state.inotify_fd,
-                                          g_state.source_dir,
-                                          IN_MODIFY | IN_CLOSE_WRITE);
-    if (g_state.watch_fd < 0)
+    for (size_t i = 0; i < g_state.num_watch; i++)
+        g_state.watch[i].seen = false;
+
+    int changes = 0;
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL)
     {
-        set_error("inotify_add_watch failed: %s", strerror(errno));
-        close(g_state.inotify_fd);
-        g_state.inotify_fd = -1;
+        if (!is_source_name(de->d_name) || strlen(de->d_name) >= MAX_PATH_LEN)
+            continue;
+
+        char full_path[MAX_PATH_LEN * 2];
+        snprintf(full_path, sizeof(full_path), "%s/%s", g_state.source_dir, de->d_name);
+        struct stat st;
+        if (stat(full_path, &st) != 0 || !S_ISREG(st.st_mode))
+            continue;
+
+        WatchEntry *e = find_watch(de->d_name);
+        bool changed = false;
+        if (!e)
+        {
+            if (g_state.num_watch >= MAX_WATCHED)
+                continue;
+            e = &g_state.watch[g_state.num_watch++];
+            memset(e, 0, sizeof(*e));
+            strncpy(e->name, de->d_name, MAX_PATH_LEN - 1);
+            changed = true;
+        }
+        else if (e->mtime != st.st_mtime || e->ctime != st.st_ctime ||
+                 e->size != st.st_size || e->ino != st.st_ino)
+        {
+            changed = true;
+        }
+        e->mtime = st.st_mtime;
+        e->ctime = st.st_ctime;
+        e->size = st.st_size;
+        e->ino = st.st_ino;
+        e->seen = true;
+
+        if (changed && report)
+        {
+            handle_file_change(full_path);
+            changes++;
+        }
+    }
+    closedir(dir);
+
+    /* Forget deleted files so a re-created file is reported as new */
+    size_t kept = 0;
+    for (size_t i = 0; i < g_state.num_watch; i++)
+        if (g_state.watch[i].seen)
+            g_state.watch[kept++] = g_state.watch[i];
+    g_state.num_watch = kept;
+
+    return changes;
+}
+
+static int watch_start(void)
+{
+    g_state.watch = calloc(MAX_WATCHED, sizeof(WatchEntry));
+    if (!g_state.watch)
+    {
+        set_error("Out of memory for file watcher");
         return -1;
     }
-
+    g_state.num_watch = 0;
+    if (scan_sources(false) < 0)   /* baseline snapshot, no events */
+    {
+        free(g_state.watch);
+        g_state.watch = NULL;
+        return -1;
+    }
     return 0;
 }
 
-static void cleanup_inotify(void)
+static void watch_stop(void)
 {
-    if (g_state.watch_fd >= 0)
-    {
-        inotify_rm_watch(g_state.inotify_fd, g_state.watch_fd);
-        g_state.watch_fd = -1;
-    }
-    if (g_state.inotify_fd >= 0)
-    {
-        close(g_state.inotify_fd);
-        g_state.inotify_fd = -1;
-    }
+    free(g_state.watch);
+    g_state.watch = NULL;
+    g_state.num_watch = 0;
 }
 
-static int poll_inotify(void)
+static int watch_poll(void)
 {
-    char buf[4096];
-    ssize_t len = read(g_state.inotify_fd, buf, sizeof(buf));
-
-    if (len <= 0)
-        return 0;
-
-    int events_processed = 0;
-    size_t offset = 0;
-
-    while (offset < (size_t)len)
-    {
-        struct inotify_event *event = (struct inotify_event *)(buf + offset);
-
-        if (event->len > 0)
-        {
-            const char *name = event->name;
-            size_t name_len = strlen(name);
-
-            /* Check for .c or .h files */
-            if ((name_len > 2 && strcmp(name + name_len - 2, ".c") == 0) ||
-                (name_len > 2 && strcmp(name + name_len - 2, ".h") == 0))
-            {
-                char full_path[MAX_PATH_LEN];
-                snprintf(full_path, sizeof(full_path), "%s/%s",
-                         g_state.source_dir, name);
-
-                handle_file_change(full_path);
-                events_processed++;
-            }
-        }
-
-        offset += sizeof(struct inotify_event) + event->len;
-    }
-
-    return events_processed;
+    int n = scan_sources(true);
+    return n < 0 ? 0 : n;
 }
-#else
-/* Fallback for non-Linux platforms - use polling */
-static int init_inotify(void) { return 0; }
-static void cleanup_inotify(void) {}
-static int poll_inotify(void) { return 0; }
-#endif
 
 /* ═══════════════════════════════════════════════════════════════════════
  * Public API - Lifecycle
@@ -705,11 +826,6 @@ int e9_livereload_init(const char *target_path,
         }
     }
 
-#ifdef __linux__
-    g_state.inotify_fd = -1;
-    g_state.watch_fd = -1;
-#endif
-
     g_state.next_patch_id = 0;
     g_state.initialized = true;
 
@@ -776,7 +892,7 @@ int e9_livereload_watch(void)
     if (g_state.watching)
         return 0;
 
-    if (init_inotify() != 0)
+    if (watch_start() != 0)
         return -1;
 
     g_state.watching = true;
@@ -792,7 +908,7 @@ void e9_livereload_unwatch(void)
     if (!g_state.watching)
         return;
 
-    cleanup_inotify();
+    watch_stop();
     g_state.watching = false;
 }
 
@@ -804,7 +920,7 @@ int e9_livereload_poll(void)
     if (!g_state.watching)
         return 0;
 
-    return poll_inotify();
+    return watch_poll();
 }
 
 void e9_livereload_set_callback(E9LiveReloadCallback callback, void *userdata)
@@ -1007,34 +1123,29 @@ void e9_livereload_get_stats(E9LiveReloadStats *stats)
 
 bool e9_livereload_compiler_available(void)
 {
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "which %s >/dev/null 2>&1", g_state.compiler);
-    return system(cmd) == 0;
+    char *argv[] = {g_state.compiler, "--version", NULL};
+    return run_argv(argv, -1) == 0;
 }
 
 const char *e9_livereload_compiler_version(void)
 {
     static char version[256];
-    char cmd[512];
-
-    snprintf(cmd, sizeof(cmd), "%s --version 2>&1 | head -1", g_state.compiler);
-
-    FILE *fp = popen(cmd, "r");
-    if (!fp)
+    int fds[2];
+    if (pipe(fds) != 0)
         return NULL;
 
-    if (fgets(version, sizeof(version), fp) == NULL)
-    {
-        pclose(fp);
+    /* `--version` output is far below the pipe buffer, so waiting for the
+     * child before reading cannot deadlock. */
+    char *argv[] = {g_state.compiler, "--version", NULL};
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    int rc = run_argv(argv, fds[1]);
+    close(fds[1]);
+    ssize_t n = rc == 0 ? read(fds[0], version, sizeof(version) - 1) : -1;
+    close(fds[0]);
+    if (n <= 0)
         return NULL;
-    }
 
-    pclose(fp);
-
-    /* Remove newline */
-    size_t len = strlen(version);
-    if (len > 0 && version[len - 1] == '\n')
-        version[len - 1] = '\0';
-
+    version[n] = '\0';
+    version[strcspn(version, "\r\n")] = '\0';   /* first line only */
     return version;
 }

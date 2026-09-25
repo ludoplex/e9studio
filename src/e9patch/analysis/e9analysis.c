@@ -552,7 +552,7 @@ bool e9_binary_is_ape(const uint8_t *data, size_t size)
         bool has_elf = false, has_pe = false;
 
         for (size_t i = 0; i < scan_limit - 4; i++) {
-            if (!has_elf && memcmp(data + i, "\x7fELF", 4) == 0) {
+            if (!has_elf && memcmp(data + i, "\x7f" "ELF", 4) == 0) {
                 has_elf = true;
             }
             if (!has_pe && data[i] == 'M' && data[i+1] == 'Z') {
@@ -573,7 +573,7 @@ bool e9_binary_is_ape(const uint8_t *data, size_t size)
     if (data[0] == 'M' && data[1] == 'Z') {
         /* Look for ELF header within first 4KB */
         for (size_t i = 64; i < 4096 && i + 4 < size; i++) {
-            if (memcmp(data + i, "\x7fELF", 4) == 0) {
+            if (memcmp(data + i, "\x7f" "ELF", 4) == 0) {
                 return true;  /* MZ + ELF = APE */
             }
         }
@@ -598,7 +598,7 @@ static int detect_ape(E9Binary *bin)
         /* Find end of shell portion (look for binary data) */
         for (size_t i = 0; i < size && i < 4096; i++) {
             if (data[i] == 0x7f && i + 4 < size &&
-                memcmp(data + i, "\x7fELF", 4) == 0) {
+                memcmp(data + i, "\x7f" "ELF", 4) == 0) {
                 bin->ape.shell_size = i;
                 break;
             }
@@ -607,7 +607,7 @@ static int detect_ape(E9Binary *bin)
 
     /* Find ELF header */
     for (size_t i = 0; i < size - 4 && i < 65536; i++) {
-        if (memcmp(data + i, "\x7fELF", 4) == 0) {
+        if (memcmp(data + i, "\x7f" "ELF", 4) == 0) {
             bin->ape.elf_offset = i;
 
             /* Parse ELF to get size and entry point */

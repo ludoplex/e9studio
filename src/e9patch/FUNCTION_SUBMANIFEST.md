@@ -56,18 +56,18 @@ Path: `src/e9patch/e9alloc.h`
 
 ### `e9ape.c`
 Path: `src/e9patch/e9ape.c`
-- L191: `e9_ape_detect` (c_function_definition)
-- L231: `e9_ape_parse` (c_function_definition)
-- L406: `e9_ape_rva_to_offset` (c_function_definition)
-- L440: `e9_ape_offset_to_rva` (c_function_definition)
-- L478: `e9_ape_patch_offset` (c_function_definition)
-- L510: `e9_ape_patch_rva` (c_function_definition)
-- L531: `e9_ape_patch` (c_function_definition)
-- L565: `e9_ape_zipos_list` (c_function_definition)
-- L639: `e9_ape_zipos_free_list` (c_function_definition)
-- L650: `e9_ape_zipos_exists` (c_function_definition)
-- L679: `e9_ape_get_self_path` (c_function_definition)
-- L705: `e9_ape_dump_info` (c_function_definition)
+- L200: `e9_ape_detect` (c_function_definition)
+- L240: `e9_ape_parse` (c_function_definition)
+- L415: `e9_ape_rva_to_offset` (c_function_definition)
+- L449: `e9_ape_offset_to_rva` (c_function_definition)
+- L487: `e9_ape_patch_offset` (c_function_definition)
+- L519: `e9_ape_patch_rva` (c_function_definition)
+- L540: `e9_ape_patch` (c_function_definition)
+- L574: `e9_ape_zipos_list` (c_function_definition)
+- L648: `e9_ape_zipos_free_list` (c_function_definition)
+- L659: `e9_ape_zipos_exists` (c_function_definition)
+- L688: `e9_ape_get_self_path` (c_function_definition)
+- L715: `e9_ape_dump_info` (c_function_definition)
 
 ### `e9ape.h`
 Path: `src/e9patch/e9ape.h`

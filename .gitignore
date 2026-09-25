@@ -10,3 +10,11 @@ src/e9patch/e9loader_*.c
 
 # Cloned reference repositories (not part of project)
 /vendor/
+
+# Pinned cosmocc toolchain (make -f Makefile.e9studio toolchain)
+/.cosmocc/
+
+# Vendor test binaries (host cc and cosmocc outputs)
+/src/e9patch/vendor/test_vendor
+/src/e9patch/vendor/test_vendor.com.dbg
+/src/e9patch/vendor/test_vendor.aarch64.elf

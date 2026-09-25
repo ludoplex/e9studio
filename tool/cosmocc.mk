@@ -1,5 +1,6 @@
 #########################################################################
 # tool/cosmocc.mk - the pinned cosmocc toolchain
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Single source of truth for the toolchain version used by the Makefiles
 # and CI. The APE build needs cosmocc because one output file then runs on

@@ -1,5 +1,6 @@
 #!/bin/sh
 # fetch-cosmocc.sh — install the pinned cosmocc toolchain, verified by sha256
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Usage: COSMOCC=DIR COSMOCC_VERSION=V COSMOCC_SHA256=HEX COSMOCC_URL=URL [COSMOCC_ZIP=local.zip] sh tool/fetch-cosmocc.sh
 #        (normally invoked as `make -f Makefile.e9studio toolchain`, which passes the pins from tool/cosmocc.mk)
 # Exit codes: 0 ok · 1 general · 2 usage · 3 missing dep · 4 partial state · 90+ assert failure

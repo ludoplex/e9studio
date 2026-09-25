@@ -15,5 +15,5 @@ Named declarations indexed: 2
 
 ### `fetch-cosmocc.sh`
 Path: `tool/fetch-cosmocc.sh`
-- L12: `die` (shell_function)
-- L13: `log` (shell_function)
+- L13: `die` (shell_function)
+- L14: `log` (shell_function)

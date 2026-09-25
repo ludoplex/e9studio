@@ -187,9 +187,10 @@ $(GUI_OUTPUT): $(BUILD_DIR)/libe9vendor.a $(GUI_OBJS) | $(BUILD_DIR)
 # CLI-only build (no GUI dependencies)
 cli: $(GUI_OUTPUT)
 
-# GUI object files need special flags
-src/e9studio/gui/%.o: src/e9studio/gui/%.c
-	$(CC) $(GUI_CFLAGS) -c $< -o $@
+# GUI object files need the STANDALONE define (it provides main). A
+# target-specific variable, because a second `%.o: %.c` pattern rule is
+# ignored by make 3.81 (macOS), which picks the first matching pattern.
+$(GUI_OBJS): CFLAGS += -DE9STUDIO_GUI_STANDALONE
 
 #########################################################################
 # Tests - every step must pass; nothing is swallowed with `|| echo`
@@ -207,9 +208,11 @@ $(BUILD_DIR)/unit/%.com: test/unit/%.c test/unit/testlib.h $(BUILD_DIR)/libe9ven
 unit: $(UNIT_BINS)
 	@set -e; for t in $(UNIT_BINS); do echo "== $$t"; ./$$t; done
 
-check: $(OUTPUT) unit
+check: $(OUTPUT) $(GUI_OUTPUT) unit
 	@echo "== $(OUTPUT) --self-test"
 	./$(OUTPUT) --self-test
+	@echo "== $(GUI_OUTPUT) --self-test"
+	./$(GUI_OUTPUT) --self-test
 	$(MAKE) -C src/e9patch/vendor CC='$(CC)' AR='$(AR)' test
 
 test: check
@@ -231,6 +234,8 @@ clean:
 	rm -f src/e9patch/*.o
 	rm -f src/e9studio/gui/*.o
 	rm -f src/e9studio/gui/platform/*.o
+	# cosmocc writes the AArch64 half of each object to <dir>/.aarch64/
+	find src -type d -name .aarch64 -prune -exec rm -rf {} +
 
 #########################################################################
 # WASM Payload Build

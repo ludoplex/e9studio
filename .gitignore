@@ -14,6 +14,19 @@ src/e9patch/e9loader_*.c
 # Pinned cosmocc toolchain (make -f Makefile.e9studio toolchain)
 /.cosmocc/
 
+# cosmocc side outputs (AArch64 objects, debug images) and macOS debug bundles
+.aarch64/
+*.com.dbg
+*.aarch64.elf
+*.dSYM/
+
+# test/livereload harness binaries
+/test/livereload/target
+/test/livereload/test_livereload
+/test/livereload/test_simple
+/test/livereload/livereload
+/test/livereload/*.ape
+
 # Vendor test binaries (host cc and cosmocc outputs)
 /src/e9patch/vendor/test_vendor
 /src/e9patch/vendor/test_vendor.com.dbg

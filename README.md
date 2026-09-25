@@ -34,6 +34,23 @@ Pre-built E9Patch binaries can be downloaded here:
 
 ## Build
 
+### E9Studio (portable executable)
+
+E9Studio - the binary analysis and live-patching tool in this repository - is
+built with the `cosmocc` toolchain, so one output file runs on Linux, macOS,
+Windows and the BSDs (x86-64 and AArch64). The toolchain version and its
+sha256 are pinned in [`tool/cosmocc.mk`](tool/cosmocc.mk).
+
+        $ make -f Makefile.e9studio toolchain   # once: fetch cosmocc 4.0.2, verify sha256
+        $ make -f Makefile.e9studio             # build/e9studio.com
+        $ make -f Makefile.e9studio check       # unit tests, --self-test, vendor tests
+
+See [`doc/cosmopolitan-port.md`](doc/cosmopolitan-port.md) for details, and
+[`FUNCTION_MANIFEST.md`](FUNCTION_MANIFEST.md) for the index of every named
+function (one `FUNCTION_SUBMANIFEST.md` per directory).
+
+### E9Patch and E9Tool (native, upstream)
+
 Building E9Patch is very easy: simply run the `build.sh` script.
 
 This will automatically build two tools:

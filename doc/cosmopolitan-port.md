@@ -1,282 +1,97 @@
-# E9Patch Cosmopolitan Port
+# E9Studio Portable Build (Cosmopolitan Libc)
 
-This document describes the Cosmopolitan Libc port of e9patch, enabling:
-- **Portable executables** that run on Linux, macOS, Windows, and BSD
-- **WebAssembly support** for browser-based binary rewriting
-- **IDE integration** for live code updates from CLion
+E9Studio is built with the `cosmocc` toolchain so that **one output file,
+`build/e9studio.com`, runs unmodified on Linux, macOS, Windows, FreeBSD,
+OpenBSD and NetBSD, on x86-64 and AArch64**. That portability is the reason
+the project uses Cosmopolitan Libc: there is no per-OS build, installer or
+runtime dependency to maintain.
 
-## Architecture Overview
+## Toolchain
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                         CLion IDE                                │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │   C Source Editor  →  File Watcher  →  Change Detection  │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                              │ WebSocket                         │
-└──────────────────────────────┼───────────────────────────────────┘
-                               │
-                               ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                    E9Patch (Cosmopolitan APE)                    │
-│  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐     │
-│  │ Platform       │  │ IDE Bridge     │  │ e9patch Core   │     │
-│  │ Abstraction    │◄─┤ (WebSocket +   │◄─┤ (Binary        │     │
-│  │ Layer          │  │  inotify)      │  │  Rewriting)    │     │
-│  └────────────────┘  └────────────────┘  └────────────────┘     │
-└──────────────────────────────────────────────────────────────────┘
-                               │
-                               ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                       Chrome Browser                             │
-│  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐     │
-│  │ e9patch.wasm   │◄─┤ JavaScript     │◄─┤ Web UI         │     │
-│  │ (wasm3)        │  │ Bridge         │  │ (Debugging)    │     │
-│  └────────────────┘  └────────────────┘  └────────────────┘     │
-└──────────────────────────────────────────────────────────────────┘
+The toolchain version and its sha256 are pinned in
+[`tool/cosmocc.mk`](../tool/cosmocc.mk) (cosmocc 4.0.2, the
+`cosmocc-4.0.2.zip` release asset of
+<https://github.com/jart/cosmopolitan/releases/tag/4.0.2>).
+
+```sh
+make -f Makefile.e9studio toolchain            # download, verify sha256, unpack to .cosmocc/4.0.2
+make -f Makefile.e9studio COSMOCC=/path/to/cosmocc-4.0.2 all   # or reuse an unpacked copy
 ```
 
-## Key Components
+`tool/fetch-cosmocc.sh` refuses to unpack an archive whose sha256 does not
+match, and never overwrites a directory it did not create.
 
-### Platform Abstraction Layer (PAL)
-- `src/e9patch/platform/e9platform.h` - Common interfaces
-- `src/e9patch/platform/e9platform_native.cpp` - POSIX/Cosmopolitan implementation
-- `src/e9patch/platform/e9platform_wasm.cpp` - WebAssembly implementation
+## Build and test
 
-### Cosmopolitan Integration
-- `src/e9patch/platform/e9cosmo.h` - Cosmopolitan-specific APIs
-- `src/e9patch/platform/e9cosmo.cpp` - hermit + wasm3 integration
-
-### IDE Integration
-- `src/e9patch/ide/clion_bridge.h` - C API for IDE communication
-- `src/e9patch/ide/clion_bridge.cpp` - WebSocket server + file watcher
-
-### Browser Interface
-- `src/e9patch/web/e9patch_chrome.js` - JavaScript API for Chrome
-- `src/e9patch/web/index.html` - Web UI for testing
-
-## Building
-
-### Prerequisites
-
-1. **Cosmopolitan Libc**:
-   ```bash
-   git clone https://github.com/jart/cosmopolitan /opt/cosmo
-   cd /opt/cosmo && make
-   ```
-
-2. **For WASM builds** (optional):
-   ```bash
-   # Install Emscripten
-   git clone https://github.com/emscripten-core/emsdk.git
-   cd emsdk && ./emsdk install latest && ./emsdk activate latest
-   source emsdk_env.sh
-   ```
-
-### Build Commands
-
-```bash
-# Build APE (Actually Portable Executable)
-make -f Makefile.cosmo all
-
-# Build optimized release
-make -f Makefile.cosmo release
-
-# Build WASM module for browser
-make -f Makefile.cosmo wasm
-
-# Build with embedded wasm3 interpreter
-make -f Makefile.cosmo wasm3-host
-
-# Clean build artifacts
-make -f Makefile.cosmo clean
+```sh
+make -f Makefile.e9studio all      # build/e9studio.com (APE, with ZipOS payload)
+make -f Makefile.e9studio gui      # build/e9studio-gui.com
+make -f Makefile.e9studio check    # unit tests (test/unit), --self-test, vendor tests
+make -f Makefile.e9studio native   # host-compiler build for quick iteration (not an APE)
+make -f Makefile.cosmo wasm        # browser build of the patching core (Emscripten)
 ```
 
-### Build Outputs
+`Makefile.cosmo` is kept as a compatibility entry point; its APE targets
+forward to `Makefile.e9studio`. It no longer uses the retired
+`cosmopolitan.h` amalgamation.
 
-| Target | Output | Description |
-|--------|--------|-------------|
-| `all` | `build/cosmo/e9patch.com` | APE binary (runs everywhere) |
-| `wasm` | `build/cosmo/e9patch.wasm` | WASM module + JS bridge |
-| `wasm3-host` | `build/cosmo/e9patch-wasm3.com` | APE with embedded wasm3 |
+The upstream C++ rewriter (`e9patch`, `e9tool`) is **not** built as an APE:
+its loaders are raw x86-64 Linux ELF/PE blobs and it relies on Linux-only
+interfaces. Build it natively with the upstream `Makefile` / `build.sh`.
 
-## Usage
+## Which Cosmopolitan facilities the code uses
 
-### Command Line (APE Binary)
+| Need | Facility | Where |
+|---|---|---|
+| One binary for every OS | `cosmocc` -> APE | `Makefile.e9studio` |
+| Pick OS behaviour at run time | `IsLinux()`, `IsWindows()`, `IsXnu()`, `IsBsd()` (`libc/dce.h`) | `e9procmem.c`, `e9studio.c`, `e9studio_gui.c` |
+| Windows process memory | `OpenProcess`, `NtReadVirtualMemory`, `WriteProcessMemory`, `VirtualProtectEx` from `libc/nt/*.h` (64-bit handles, `ms_abi`) | `e9procmem.c` |
+| Assets inside the executable | ZipOS: read via `/zip/...`, appended with `zipcopy` | `e9wasm_host.c`, `Makefile.e9studio` |
+| Crash diagnostics | `ShowCrashReports()` | `main()` of `e9studio.c`, `e9studio_gui_main.c` |
+| Path of the running program | `GetProgramExecutableName()` | `e9ape.c` |
 
-```bash
-# Run on any OS - Linux, macOS, Windows, BSD
-./e9patch.com --help
+Rules that follow from this (see `CONVENTIONS.md`):
 
-# Start with IDE integration
-./e9patch.com --ide-port=9229
+- `cosmocc` does not define `__linux__`, `__APPLE__` or `_WIN32`. Code that
+  must behave differently per OS dispatches at run time; `#ifdef` on those
+  macros is only for native (non-APE) builds.
+- Never hand-declare an OS API. Include the Cosmopolitan header that declares
+  it, so types (64-bit `HANDLE`s) and calling conventions are right.
+- Prefer a facility the toolchain already ships over vendoring or rewriting one.
 
-# Standard e9patch usage
-./e9patch.com < input.json > output.bin
-```
+## Process memory backends (`src/e9patch/e9procmem.c`)
 
-### Browser (WASM)
+| Host | Backend | Notes |
+|---|---|---|
+| Linux | `pread`/`pwrite` on `/proc/PID/mem` | no stop required; writes are forced through page protections |
+| Windows | NT process handle | `OpenProcess` + `NtReadVirtualMemory` / `WriteProcessMemory` |
+| macOS, BSD | self only | remote access reports `PROCMEM_ERR_PLATFORM` |
 
-```javascript
-// Initialize E9Patch
-await E9Patch.init({ wasmUrl: './e9patch.wasm' });
+Self-patching makes the touched pages RWX; hosts that enforce W^X (Apple
+silicon, OpenBSD) refuse that and the call reports `PROCMEM_ERR_PERM`.
 
-// Load binary
-await E9Patch.loadBinaryFromUrl('./my_program', 'my_program');
+## Live reload
 
-// Connect to CLion IDE
-await E9Patch.IDE.connect('ws://localhost:9229');
+The watcher polls `stat()` of `*.c` / `*.h` in the source directory (same code
+on every OS) and spawns the compiler with `posix_spawnp` and an argv vector,
+so file names are never interpreted by a shell.
 
-// Set callbacks
-E9Patch.callbacks.onPatchApplied = (addr, data) => {
-    console.log(`Patched 0x${addr.toString(16)}`);
-};
+## Browser build (WASM)
 
-// Changes from IDE are automatically applied
-// Download result
-E9Patch.downloadPatchedBinary();
-```
+`make -f Makefile.cosmo wasm` compiles a subset of the C++ core with
+Emscripten into `build/wasm/e9patch.js` (+ `.wasm`), driven by
+`src/e9patch/web/e9patch_chrome.js`. This path does not use cosmocc. The
+WebAssembly runtime embedded in `e9studio.com` is WAMR
+(`src/e9patch/vendor/wamr`, with a Cosmopolitan platform layer).
 
-### CLion Integration
+## Known limitations
 
-1. **Start e9patch with IDE mode**:
-   ```bash
-   ./e9patch.com --ide-port=9229
-   ```
-
-2. **Open Chrome debugging UI**:
-   Open `http://localhost:8080` (or serve `src/e9patch/web/index.html`)
-
-3. **Connect from CLion**:
-   - Install WebSocket plugin or use terminal
-   - Connect to `ws://localhost:9229`
-
-4. **Edit source code**:
-   - Modify C source files in CLion
-   - Changes are detected via file watcher
-   - Patches are applied automatically
-
-## API Reference
-
-### C API
-
-```c
-// Initialize Cosmopolitan mode
-void e9cosmo_init(void);
-
-// Load binary for patching
-int e9cosmo_load_binary(const uint8_t *data, size_t size, const char *name);
-
-// Apply patch at address
-int e9cosmo_apply_patch(intptr_t address, const uint8_t *data, size_t size);
-
-// Get patched binary
-int e9cosmo_get_patched_binary(uint8_t **outData, size_t *outSize);
-
-// Source change notification (from IDE)
-int e9cosmo_on_source_change(const char *file, uint32_t lineStart,
-                              uint32_t lineEnd, const char *content,
-                              size_t contentLen);
-
-// Breakpoint management
-int e9cosmo_set_breakpoint(intptr_t address);
-int e9cosmo_clear_breakpoint(intptr_t address);
-
-// Hot reload
-int e9cosmo_hot_reload(const char *sourceFile);
-```
-
-### JavaScript API
-
-```javascript
-// Core operations
-await E9Patch.init(config);
-await E9Patch.loadBinary(uint8Array, name);
-await E9Patch.loadBinaryFromUrl(url, name);
-E9Patch.getPatchedBinary();
-E9Patch.downloadPatchedBinary(filename);
-
-// IDE integration
-await E9Patch.IDE.connect(wsUrl);
-E9Patch.IDE.disconnect();
-
-// Callbacks
-E9Patch.callbacks.onPatchApplied = (addr, data) => {};
-E9Patch.callbacks.onProgress = (current, total, msg) => {};
-E9Patch.callbacks.onError = (code, msg) => {};
-E9Patch.callbacks.onComplete = (success, path) => {};
-E9Patch.callbacks.onSourceChange = (data) => {};
-
-// Debugging
-E9Patch.setBreakpoint(address);
-E9Patch.clearBreakpoint(address);
-E9Patch.hotReload(sourceFile);
-```
-
-## Integration with jart/cosmopolitan
-
-This port leverages key Cosmopolitan features:
-
-### hermit
-- Syscall emulation for portable execution
-- Works on Linux, macOS, Windows, BSD without modification
-- No runtime dependencies
-
-### wasm3
-- Embedded WebAssembly interpreter
-- Allows running WASM modules within the APE binary
-- Bridge between native and web environments
-
-### APE (Actually Portable Executable)
-- Single binary that runs everywhere
-- Self-modifying header adapts to host OS
-- Polyglot binary format (ELF + PE + Mach-O + shell script)
-
-## Dynamic Hot-Reload Workflow
-
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   CLion     │     │  e9patch    │     │   Chrome    │
-│   IDE       │     │  (APE)      │     │   Browser   │
-└──────┬──────┘     └──────┬──────┘     └──────┬──────┘
-       │                   │                   │
-       │ Edit source.c     │                   │
-       │───────────────────>                   │
-       │                   │                   │
-       │    File change    │                   │
-       │    detected       │                   │
-       │                   │                   │
-       │    Recompile      │                   │
-       │    source.c       │                   │
-       │                   │                   │
-       │    Generate       │                   │
-       │    patches        │                   │
-       │                   │                   │
-       │                   │ Patch applied     │
-       │                   │──────────────────>│
-       │                   │                   │
-       │                   │                   │ Update UI
-       │                   │                   │
-       │<──────────────────│<──────────────────│
-       │   Status update   │   Status update   │
-       │                   │                   │
-```
-
-## Limitations
-
-1. **Tactic B0** (SIGILL-based patching) is not available in WASM mode
-2. **fork/exec** not available in browser - single-threaded operation
-3. **Direct memory mapping** not available in WASM - uses linear memory
-4. **File system access** requires virtual filesystem in browser
-
-## Future Enhancements
-
-- [ ] Full Chrome DevTools Protocol integration
-- [ ] Source-level debugging with DWARF
-- [ ] Incremental compilation in browser
-- [ ] Multi-binary support
-- [ ] Remote debugging over network
+1. The CLion bridge (`src/e9patch/ide/clion_bridge.cpp`) uses inotify and is
+   not part of the APE build.
+2. Self-patching a running `e9studio.com` on Windows fails to open the image
+   for writing (the loader holds it); patch a copy instead.
+3. Remote process memory on macOS/BSD is not implemented.
 
 ## License
 
-GPLv3+ - Same as e9patch
+GPLv3+ - same as e9patch.

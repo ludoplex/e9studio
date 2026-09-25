@@ -118,7 +118,8 @@ int e9_ape_patch(uint8_t *data, size_t size, const e9_ape_info_t *info,
 #include <stddef.h>
 #include <stdbool.h>
 
-/* 3. System headers (if needed) */
+/* 3. System headers (if needed; Cosmopolitan ones such as <cosmo.h>
+ *    need _COSMO_SOURCE defined before the first include) */
 #include <elf.h>
 
 /* 4. Project headers */
@@ -190,12 +191,16 @@ e9studio/
         └── e9ape.c           # Hand-written impl (uses gen/)
 ```
 
-### Regen-and-Diff Gate
+### Regen-and-Diff Gates
 
 ```bash
-# MUST pass before any commit
-make regen
+# gen/: regenerate with the cosmo-bde generators (schemagen/smgen live in
+# cosmo-bde, not in this repository), then:
 git diff --exit-code gen/
+
+# Function manifests: regenerate FUNCTION_MANIFEST.md and every
+# FUNCTION_SUBMANIFEST.md (manifest-kit, config in manifest.config.json),
+# then the drift gate must report no difference against the committed copies.
 ```
 
 ---
@@ -241,19 +246,44 @@ const char *path = "/lib/binaryen.wasm";
 
 ## 7. Build Profiles
 
-### Portable (Default)
+### APE (default)
 
 ```bash
-make PROFILE=portable
-# Uses system cc, links dynamically
+make -f Makefile.e9studio toolchain   # pinned cosmocc 4.0.2, sha256-verified
+make -f Makefile.e9studio all check   # build/e9studio.com + tests
 ```
 
-### APE (Cosmopolitan)
+One binary for Linux, macOS, Windows and the BSDs. The toolchain version and
+sha256 live only in `tool/cosmocc.mk`; do not repeat them elsewhere.
+
+### Native (quick iteration)
 
 ```bash
-make PROFILE=ape
-# Uses cosmocc, produces .com APE binary
+make -f Makefile.e9studio native      # host cc, not an APE, no ZipOS
 ```
+
+### Run-time OS dispatch
+
+`cosmocc` does not define `__linux__`, `__APPLE__` or `_WIN32`, because the
+host OS is only known when the APE starts. So:
+
+```c
+/* YES - decided at run time, works in the APE */
+#include <cosmo.h>
+if (IsWindows()) { ... } else if (IsLinux()) { ... }
+
+/* NO - this branch is silently missing from the APE */
+#ifdef __linux__
+...
+#endif
+```
+
+Compile-time OS `#ifdef`s are allowed only as the fallback for native builds
+(`#ifdef __COSMOPOLITAN__ ... #elif defined(__linux__) ...`).
+
+Never hand-declare an operating-system function. Windows APIs come from
+Cosmopolitan's `libc/nt/*.h` headers, which carry the right types (64-bit
+`HANDLE`s) and the `ms_abi` calling convention.
 
 ### Generated Code Must Work With Both
 
@@ -342,14 +372,17 @@ When working with e9studio code, LLMs should:
 - Add section separators between logical groups
 - Write literate comments explaining "why"
 - Create/update `.schema` and `.sm` specs first
-- Run `make regen` after spec changes
+- Regenerate `gen/` (cosmo-bde generators) after spec changes
+- Search `FUNCTION_MANIFEST.md` / `FUNCTION_SUBMANIFEST.md` before adding a function
+- Dispatch OS-specific behaviour at run time (`IsWindows()`, `IsLinux()`, `IsXnu()`)
 
 ### DO NOT
 
 - Use C++ features (classes, templates, exceptions, `new`)
 - Hand-edit files in `gen/` directory
-- Skip the regen-and-diff gate
-- Use platform-specific headers
+- Skip the regen-and-diff gates
+- Hand-declare OS APIs, or guard APE code paths with `#ifdef __linux__` / `_WIN32`
+- Build shell command strings from file names (spawn with an argv vector)
 - Ignore APE's polyglot nature (always consider all views)
 - Create new files without updating specs
 
@@ -357,8 +390,9 @@ When working with e9studio code, LLMs should:
 
 - [ ] Is it pure C? (`grep -r 'class\|template\|new\s' src/`)
 - [ ] Are names correct? (`grep -r '^[a-z]' src/*.h | grep -v e9_`)
-- [ ] Is gen/ clean? (`make regen && git diff --exit-code gen/`)
-- [ ] Do features pass? (`make test-features`)
+- [ ] Is gen/ clean? (regenerate, then `git diff --exit-code gen/`)
+- [ ] Do tests pass? (`make -f Makefile.e9studio check`)
+- [ ] Are the function manifests current? (regenerate; drift gate clean)
 
 ---
 

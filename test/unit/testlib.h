@@ -98,8 +98,15 @@ static int e9test_skipped;
         return;                                                             \
     } while (0)
 
-int main(void)
+/* A test file may define E9TEST_PRE_MAIN(argc, argv) before including this
+ * header, e.g. to let the test binary double as a helper program it spawns. */
+#ifndef E9TEST_PRE_MAIN
+#define E9TEST_PRE_MAIN(argc, argv) ((void)(argc), (void)(argv))
+#endif
+
+int main(int argc, char **argv)
 {
+    E9TEST_PRE_MAIN(argc, argv);
     int n = 0;
     for (e9test *t = e9test_head; t; t = t->next, n++) {
         int before = e9test_failures;

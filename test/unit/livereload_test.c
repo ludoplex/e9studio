@@ -1,6 +1,11 @@
 /*
  * livereload_test.c - tests for the live-reload file watcher, the
- * shell-free compiler invocation, and APE self-location
+ * shell-free compiler invocation, and APE self-location/parsing
+ *
+ * The binary doubles as a fake compiler: with E9_FAKE_CC=1 in its
+ * environment it answers `--version` and `... -c SRC -o OUT` (copying SRC
+ * to OUT) instead of running the tests. That lets the tests spawn a real
+ * "compiler" on every OS without depending on one being installed.
  *
  * Copyright (C) 2026 E9Studio Contributors
  * License: GPLv3+
@@ -13,21 +18,13 @@
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include "e9ape.h"
 #include "e9livereload.h"
-#include "testlib.h"
-
-static int write_text(const char *path, const char *text)
-{
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) return -1;
-    ssize_t n = write(fd, text, strlen(text));
-    close(fd);
-    return n == (ssize_t)strlen(text) ? 0 : -1;
-}
 
 static int copy_file(const char *from, const char *to)
 {
@@ -41,12 +38,45 @@ static int copy_file(const char *from, const char *to)
     return (in < 0 || out < 0 || n < 0) ? -1 : 0;
 }
 
+/* Fake compiler mode (see file comment). Exits; never returns when active. */
+static void fake_cc(int argc, char **argv)
+{
+    if (!getenv("E9_FAKE_CC"))
+        return;
+    if (argc == 2 && strcmp(argv[1], "--version") == 0) {
+        puts("e9-fake-cc 1.0");
+        exit(0);
+    }
+    const char *src = NULL, *out = NULL;
+    for (int i = 1; i + 1 < argc; i++) {
+        if (strcmp(argv[i], "-c") == 0) src = argv[i + 1];
+        if (strcmp(argv[i], "-o") == 0) out = argv[i + 1];
+    }
+    exit(src && out && copy_file(src, out) == 0 ? 0 : 3);
+}
+#define E9TEST_PRE_MAIN(argc, argv) fake_cc(argc, argv)
+#include "testlib.h"
+
+static int write_text(const char *path, const char *text)
+{
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return -1;
+    ssize_t n = write(fd, text, strlen(text));
+    close(fd);
+    return n == (ssize_t)strlen(text) ? 0 : -1;
+}
+
+static bool exists(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0;
+}
+
 TEST(ape, self_path_is_found)
 {
     const char *self = e9_ape_get_self_path();
     ASSERT_TRUE(self != NULL);
-    struct stat st;
-    EXPECT_EQ(0, stat(self, &st));
+    EXPECT_TRUE(exists(self));
     printf("  self=%s\n", self);
 }
 
@@ -78,66 +108,113 @@ TEST(ape, parses_own_fat_binary)
 #endif
 }
 
-TEST(livereload, watcher_reports_changes_without_a_shell)
+/* Temporary layout shared by the live-reload tests */
+typedef struct {
+    char dir[64], target[512], src[512], cache[512];
+} Scratch;
+
+static int scratch_init(Scratch *s)
+{
+    snprintf(s->dir, sizeof(s->dir), "/tmp/e9lrtest.XXXXXX");
+    if (!mkdtemp(s->dir)) return -1;
+    snprintf(s->target, sizeof(s->target), "%s/target.com", s->dir);
+    snprintf(s->src, sizeof(s->src), "%s/src", s->dir);
+    snprintf(s->cache, sizeof(s->cache), "%s/cache", s->dir);
+    if (mkdir(s->src, 0755) != 0) return -1;
+    /* the running APE is locked on some hosts; watch a copy of it */
+    return copy_file(e9_ape_get_self_path(), s->target);
+}
+
+static void scratch_remove(Scratch *s, const char *const *files)
+{
+    char path[1024];
+    for (; *files; files++) {
+        snprintf(path, sizeof(path), "%s/%s", s->src, *files);
+        unlink(path);
+        snprintf(path, sizeof(path), "%s/%s.o", s->cache, *files);
+        unlink(path);
+        snprintf(path, sizeof(path), "%s/%s.new.o", s->cache, *files);
+        unlink(path);
+    }
+    rmdir(s->cache);
+    rmdir(s->src);
+    unlink(s->target);
+    rmdir(s->dir);
+}
+
+TEST(livereload, watcher_reports_new_and_edited_sources_only)
 {
 #ifndef __COSMOPOLITAN__
     SKIP_TEST("needs an APE target; build with cosmocc");
 #else
-    char dir[] = "/tmp/e9lrtest.XXXXXX";
-    ASSERT_TRUE(mkdtemp(dir) != NULL);
-    char target[512], src[512], cache[512], evil[512], pwned[512];
-    snprintf(target, sizeof(target), "%s/target.com", dir);
-    snprintf(src, sizeof(src), "%s/src", dir);
-    snprintf(cache, sizeof(cache), "%s/cache", dir);
-    snprintf(pwned, sizeof(pwned), "%s/src/PWNED", dir);
-    ASSERT_EQ(0, mkdir(src, 0755));
-
-    /* the running APE is locked on some hosts; watch a copy of it */
-    ASSERT_EQ(0, copy_file(e9_ape_get_self_path(), target));
-
+    Scratch s;
+    ASSERT_EQ(0, scratch_init(&s));
     E9LiveReloadConfig cfg = E9_LIVERELOAD_CONFIG_DEFAULT;
-    cfg.source_dir = src;
-    cfg.cache_dir = cache;
+    cfg.source_dir = s.src;
+    cfg.cache_dir = s.cache;
     cfg.compiler = "e9-no-such-compiler";   /* spawn fails fast, no shell */
     cfg.enable_hot_patch = false;
-    ASSERT_EQ(0, e9_livereload_init(target, &cfg));
+    ASSERT_EQ(0, e9_livereload_init(s.target, &cfg));
     ASSERT_EQ(0, e9_livereload_watch());
-
-    E9LiveReloadStats stats;
     EXPECT_EQ(0, e9_livereload_poll());               /* empty baseline */
 
-    char a[600];
-    snprintf(a, sizeof(a), "%s/a.c", src);
+    char a[600], notes[600];
+    snprintf(a, sizeof(a), "%s/a.c", s.src);
+    snprintf(notes, sizeof(notes), "%s/notes.txt", s.src);
     ASSERT_EQ(0, write_text(a, "int f(void){return 1;}\n"));
     EXPECT_EQ(1, e9_livereload_poll());               /* new file */
     EXPECT_EQ(0, e9_livereload_poll());               /* unchanged */
     ASSERT_EQ(0, write_text(a, "int f(void){return 22;}\n"));
-    EXPECT_EQ(1, e9_livereload_poll());               /* edited */
-
-    char readme[600];
-    snprintf(readme, sizeof(readme), "%s/notes.txt", src);
-    ASSERT_EQ(0, write_text(readme, "not a source file\n"));
+    EXPECT_EQ(1, e9_livereload_poll());               /* edited (size differs) */
+    ASSERT_EQ(0, write_text(notes, "not a source file\n"));
     EXPECT_EQ(0, e9_livereload_poll());               /* ignored */
 
-    /* a hostile file name must reach the compiler as one argv element */
-    snprintf(evil, sizeof(evil), "%s/x;touch PWNED;.c", src);
-    ASSERT_EQ(0, write_text(evil, "int g;\n"));
-    ASSERT_EQ(0, chdir(src));
-    EXPECT_EQ(1, e9_livereload_poll());
-    struct stat st;
-    EXPECT_TRUE(stat(pwned, &st) != 0);
-
+    E9LiveReloadStats stats;
     e9_livereload_get_stats(&stats);
-    EXPECT_EQ(3, stats.changes_detected);
-
-    e9_livereload_unwatch();
+    EXPECT_EQ(2, stats.changes_detected);
     e9_livereload_shutdown();
-    unlink(evil);
-    unlink(readme);
-    unlink(a);
-    rmdir(cache);
-    rmdir(src);
-    unlink(target);
-    rmdir(dir);
+    static const char *const files[] = {"a.c", "notes.txt", NULL};
+    scratch_remove(&s, files);
+#endif
+}
+
+TEST(livereload, compiler_gets_file_names_as_argv_not_via_a_shell)
+{
+#ifndef __COSMOPOLITAN__
+    SKIP_TEST("needs an APE target; build with cosmocc");
+#else
+    Scratch s;
+    ASSERT_EQ(0, scratch_init(&s));
+    ASSERT_EQ(0, setenv("E9_FAKE_CC", "1", 1));      /* children act as the compiler */
+    E9LiveReloadConfig cfg = E9_LIVERELOAD_CONFIG_DEFAULT;
+    cfg.source_dir = s.src;
+    cfg.cache_dir = s.cache;
+    cfg.compiler = e9_ape_get_self_path();
+    cfg.enable_hot_patch = false;
+    ASSERT_EQ(0, e9_livereload_init(s.target, &cfg));
+
+    EXPECT_TRUE(e9_livereload_compiler_available());   /* spawn + /dev/null */
+    EXPECT_STREQ("e9-fake-cc 1.0", e9_livereload_compiler_version());  /* spawn + pipe */
+
+    ASSERT_EQ(0, e9_livereload_watch());
+    static const char evil_name[] = "y;touch PWNED;.c";
+    char evil[600], cached[600], pwned[600];
+    snprintf(evil, sizeof(evil), "%s/%s", s.src, evil_name);
+    snprintf(cached, sizeof(cached), "%s/%s.o", s.cache, evil_name);
+    snprintf(pwned, sizeof(pwned), "%s/PWNED", s.src);
+    ASSERT_EQ(0, write_text(evil, "int g;\n"));
+    ASSERT_EQ(0, chdir(s.src));
+    EXPECT_EQ(1, e9_livereload_poll());
+    /* the fake compiler received the whole name as one argument and
+     * produced the object the watcher then cached under that name */
+    EXPECT_TRUE(exists(cached));
+    EXPECT_TRUE(!exists(pwned));
+    EXPECT_TRUE(!exists("PWNED"));
+
+    e9_livereload_shutdown();
+    unsetenv("E9_FAKE_CC");
+    ASSERT_EQ(0, chdir("/tmp"));   /* leave the directory before removing it */
+    static const char *const files[] = {"y;touch PWNED;.c", NULL};
+    scratch_remove(&s, files);
 #endif
 }

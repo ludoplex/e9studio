@@ -6,7 +6,7 @@ Deterministic index of named declarations (C/C++, shell, Python, JavaScript) in 
 
 Indexed directories: 18
 Indexed source files: 150
-Indexed named declarations: 2559
+Indexed named declarations: 2564
 
 ## Coverage Rules
 
@@ -32,5 +32,5 @@ Indexed named declarations: 2559
 - [`src/e9tool`](./src/e9tool/FUNCTION_SUBMANIFEST.md): 23 source files, 344 named declarations.
 - [`test/livereload`](./test/livereload/FUNCTION_SUBMANIFEST.md): 4 source files, 35 named declarations.
 - [`test/regtest`](./test/regtest/FUNCTION_SUBMANIFEST.md): 8 source files, 115 named declarations.
-- [`test/unit`](./test/unit/FUNCTION_SUBMANIFEST.md): 3 source files, 12 named declarations.
+- [`test/unit`](./test/unit/FUNCTION_SUBMANIFEST.md): 3 source files, 17 named declarations.
 - [`tool`](./tool/FUNCTION_SUBMANIFEST.md): 1 source files, 2 named declarations.

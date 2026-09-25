@@ -226,8 +226,11 @@ static int run_argv(char *const argv[], int out_fd)
         return -1;
     if (out_fd >= 0)
     {
-        posix_spawn_file_actions_adddup2(&fa, out_fd, 1);
-        posix_spawn_file_actions_adddup2(&fa, out_fd, 2);
+        /* dup2(fd, fd) as a spawn action is not portable; skip identities */
+        if (out_fd != 1)
+            posix_spawn_file_actions_adddup2(&fa, out_fd, 1);
+        if (out_fd != 2)
+            posix_spawn_file_actions_adddup2(&fa, out_fd, 2);
     }
     else
     {

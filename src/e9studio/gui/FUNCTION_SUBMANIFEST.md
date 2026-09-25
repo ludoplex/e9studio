@@ -177,13 +177,13 @@ Path: `src/e9studio/gui/e9studio_gui.h`
 
 ### `e9studio_gui_main.c`
 Path: `src/e9studio/gui/e9studio_gui_main.c`
-- L20: `__attribute__` (c_function_definition)
-- L35: `print_usage` (c_function_definition)
-- L61: `print_version` (c_function_definition)
-- L88: `parse_args` (c_function_definition)
-- L137: `run_self_test` (c_function_definition)
-- L242: `e9studio_gui_main` (c_function_definition)
-- L363: `main` (c_function_definition)
+- L29: `__attribute__` (c_function_definition)
+- L44: `print_usage` (c_function_definition)
+- L70: `print_version` (c_function_definition)
+- L97: `parse_args` (c_function_definition)
+- L146: `run_self_test` (c_function_definition)
+- L251: `e9studio_gui_main` (c_function_definition)
+- L372: `main` (c_function_definition)
 
 ### `e9studio_tedit.h`
 Path: `src/e9studio/gui/e9studio_tedit.h`

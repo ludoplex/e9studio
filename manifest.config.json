@@ -1,0 +1,22 @@
+{
+  "description": "Deterministic index of named declarations (C/C++, shell, Python, JavaScript) in this repository, so contributors search existing implementations before adding new code. Regenerate after every source change; the drift gate fails when the committed manifests do not match the code.",
+  "languages": ["c", "shell", "python", "javascript"],
+  "ignored_dirs": [".git", ".github", ".vscode", "__pycache__", "node_modules", "build", "dist", "target", ".cosmocc", "contrib", "releases"],
+  "ignored_paths": ["src/e9patch/vendor/wamr"],
+  "skip_hidden_dirs": true,
+  "hidden_dir_allowlist": [],
+  "c_scanner": "functions",
+  "python_scanner": "ast",
+  "include_context": false,
+  "named_wording": true,
+  "encoding_errors": "ignore",
+  "coverage_rules": [
+    "Indexes C/C++ function definitions and declarations, shell functions, Python defs/classes, and JavaScript functions/classes.",
+    "Excludes third-party trees (`contrib/`, `src/e9patch/vendor/wamr/`), build output (`build/`, `.cosmocc/`), release artifacts, and hidden directories.",
+    "Writes a per-directory `FUNCTION_SUBMANIFEST.md` only where named declarations were found."
+  ],
+  "directory_notes": [
+    "Search this submanifest before adding a function in this directory; reuse, extend or wrap an existing one first.",
+    "Prefer the Cosmopolitan Libc APIs shipped with the pinned cosmocc toolchain over new platform wrappers."
+  ]
+}

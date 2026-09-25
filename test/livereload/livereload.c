@@ -8,7 +8,7 @@
  * Workflow: make regen → use gen/domain/livereload_types.h
  *
  * Workflow:
- *   1. Watch source files (inotify)
+ *   1. Watch source files (stat polling)
  *   2. Recompile on change (cosmocc -c)
  *   3. Extract function addresses (objdump/nm)
  *   4. Diff object files
@@ -306,8 +306,8 @@ static int diff_functions(const char *old_obj, const char *new_obj,
 /* ═══════════════════════════════════════════════════════════════════════════
  * Process Patching (unified e9procmem API)
  *
- * Uses process_vm_readv/writev on Linux (no ptrace, no stop required!)
- * Uses ReadProcessMemory/WriteProcessMemory on Windows
+ * Linux: /proc/PID/mem (no ptrace attach, no stop required)
+ * Windows: NtReadVirtualMemory/WriteProcessMemory (when built with cosmocc)
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 #include "../../src/e9patch/e9procmem.h"
@@ -390,7 +390,7 @@ static int apply_patch(int pid, PatchData *patch) {
         return -1;
     }
 
-    /* Write new bytes (no stop required with process_vm_writev!) */
+    /* Write new bytes (no stop required with /proc/PID/mem) */
     if (write_memory(addr, patch->new_bytes, patch->patch_size) != 0) {
         return -1;
     }
@@ -554,7 +554,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Note: With process_vm_writev we don't need root if we own the process.
+    /* Note: With /proc/PID/mem we don't need root if we own the process.
      * Root is only needed if /proc/sys/kernel/yama/ptrace_scope > 0 and
      * we're patching a process we don't own. */
 

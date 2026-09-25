@@ -19,6 +19,7 @@
 #include "e9studio_config.h"
 
 #include "e9wasm_host.h"
+#include "../e9ape.h"          /* e9_ape_get_self_path() */
 
 /* WAMR headers */
 #include "wasm_export.h"
@@ -339,18 +340,11 @@ int e9wasm_init(const E9WasmConfig *config)
     g_runtime.shared_buffer_size = buf_size;
 
     /* Get executable path */
-#ifdef __COSMOPOLITAN__
-    const char *exe = GetProgramExecutableName();
+    /* one implementation for every build (APE, native Linux, native macOS) */
+    const char *exe = e9_ape_get_self_path();
     if (exe) {
         E9_STRCPY_SAFE(g_runtime.exe_path, sizeof(g_runtime.exe_path), exe);
     }
-#else
-    ssize_t len = readlink("/proc/self/exe", g_runtime.exe_path,
-                           sizeof(g_runtime.exe_path) - 1);
-    if (len > 0) {
-        g_runtime.exe_path[len] = '\0';
-    }
-#endif
 
     g_runtime.initialized = true;
     wasm_log("WAMR initialized, shared buffer: %zu MB",

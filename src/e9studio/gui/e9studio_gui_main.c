@@ -9,11 +9,20 @@
  * License: GPLv3+
  */
 
+/* Cosmopolitan extensions (ShowCrashReports, GetProgramExecutableName, IsWindows...) */
+#if defined(__COSMOPOLITAN__) && !defined(_COSMO_SOURCE)
+#define _COSMO_SOURCE
+#endif
+
 #include "e9studio_tedit.h"
 #include "e9studio_gui.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef __COSMOPOLITAN__
+#include <cosmo.h>          /* ShowCrashReports() */
+#endif
 
 /* Forward declaration - original TUI main from e9studio.c */
 /* Weak symbol allows standalone GUI build without TUI */
@@ -362,6 +371,9 @@ int e9studio_gui_main(int argc, char **argv)
 #ifdef E9STUDIO_GUI_STANDALONE
 int main(int argc, char **argv)
 {
+#ifdef __COSMOPOLITAN__
+    ShowCrashReports();   /* symbolized backtraces on crash, on every OS */
+#endif
     return e9studio_gui_main(argc, argv);
 }
 #endif

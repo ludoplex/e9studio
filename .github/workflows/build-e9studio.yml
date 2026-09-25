@@ -2,10 +2,13 @@ name: Build E9Studio
 
 on:
   push:
-    branches: [ main, master, 'claude/*' ]
+    branches: [ main, master ]
     paths:
-      - 'src/e9patch/**'
+      - 'src/**'
+      - 'test/unit/**'
+      - 'tool/**'
       - 'Makefile.e9studio'
+      - 'Makefile.cosmo'
       - '.github/workflows/build-e9studio.yml'
   pull_request:
     branches: [ main, master ]
@@ -13,283 +16,82 @@ on:
   release:
     types: [ created ]
 
-env:
-  COSMOCC_VERSION: "3.9.7"
+permissions:
+  contents: read
 
 jobs:
-  # Primary build: Cross-platform APE using cosmocc
+  # One APE build; the same files are then run on Linux, macOS and Windows.
   build-ape:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Cache cosmocc toolchain
-        id: cache-cosmocc
         uses: actions/cache@v4
         with:
-          path: ${{ github.workspace }}/cosmocc
-          key: cosmocc-${{ env.COSMOCC_VERSION }}-linux-v3
+          path: .cosmocc
+          # tool/cosmocc.mk holds the pinned version + sha256
+          key: cosmocc-${{ hashFiles('tool/cosmocc.mk') }}
 
-      - name: Install cosmocc toolchain
-        if: steps.cache-cosmocc.outputs.cache-hit != 'true'
-        run: |
-          set -ex
-          mkdir -p $GITHUB_WORKSPACE/cosmocc
-          cd $GITHUB_WORKSPACE/cosmocc
+      - name: Install pinned cosmocc (sha256-verified)
+        run: make -f Makefile.e9studio toolchain
 
-          # Download from cosmo.zip (always has latest)
-          echo "Downloading cosmocc toolchain..."
-          curl -fsSL "https://cosmo.zip/pub/cosmocc/cosmocc.zip" -o cosmocc.zip
+      - name: Build and check (unit tests, --self-test, vendor tests)
+        run: make -f Makefile.e9studio -j"$(nproc)" check
 
-          echo "Extracting..."
-          unzip -q cosmocc.zip
-          rm cosmocc.zip
-
-          # Verify installation
-          echo "Installed cosmocc toolchain:"
-          ls -la $GITHUB_WORKSPACE/cosmocc/bin/ | head -10
-          $GITHUB_WORKSPACE/cosmocc/bin/cosmocc --version || true
-
-      - name: Setup APE loader for Linux
-        run: |
-          # Register APE loader with binfmt_misc for direct execution
-          if [ -f $GITHUB_WORKSPACE/cosmocc/bin/ape-x86_64.elf ]; then
-            sudo cp $GITHUB_WORKSPACE/cosmocc/bin/ape-x86_64.elf /usr/bin/ape
-            sudo chmod +x /usr/bin/ape
-          elif [ -f $GITHUB_WORKSPACE/cosmocc/bin/ape.elf ]; then
-            sudo cp $GITHUB_WORKSPACE/cosmocc/bin/ape.elf /usr/bin/ape
-            sudo chmod +x /usr/bin/ape
-          fi
-
-          # Register APE format (optional, improves performance)
-          if [ -f /proc/sys/fs/binfmt_misc/register ]; then
-            sudo sh -c "echo ':APE:M::MZqFpD::/usr/bin/ape:' >/proc/sys/fs/binfmt_misc/register" 2>/dev/null || true
-          fi
-
-      - name: Build e9studio (APE)
-        run: |
-          make -f Makefile.e9studio CC=$GITHUB_WORKSPACE/cosmocc/bin/cosmocc AR=$GITHUB_WORKSPACE/cosmocc/bin/cosmoar all
-
-      - name: Run vendor library tests
-        run: |
-          make -f Makefile.e9studio CC=$GITHUB_WORKSPACE/cosmocc/bin/cosmocc AR=$GITHUB_WORKSPACE/cosmocc/bin/cosmoar test
-
-      - name: Create embedded resources
-        run: |
-          mkdir -p .cosmo
-          echo "E9Studio - Actually Portable Executable" > .cosmo/README
-          echo "1.0.0" > .cosmo/VERSION
-          echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > .cosmo/BUILD_TIME
-          echo "linux,macos,windows,freebsd,openbsd,netbsd" > .cosmo/PLATFORMS
-          
-          # Copy WASM modules if they exist
-          if [ -f "build/e9patch.wasm" ]; then
-            echo "Including e9patch.wasm in ZipOS"
-            cp build/e9patch.wasm .cosmo/
-          else
-            echo "Note: e9patch.wasm not found, native mode will be used"
-          fi
-          
-          # NOTE: TinyCC (tcc.wasm) is NOT compatible with Cosmopolitan
-          # Use binaryen.wasm for IR-level diffing instead
-          if [ -f "build/binaryen.wasm" ]; then
-            echo "Including binaryen.wasm in ZipOS"
-            cp build/binaryen.wasm .cosmo/
-          fi
-
-          # Also check in src/ directory for pre-built modules
-          if [ -f "src/e9patch/wasm/e9patch.wasm" ]; then
-            echo "Including e9patch.wasm from src/"
-            cp src/e9patch/wasm/e9patch.wasm .cosmo/
-          fi
-
-          if [ -f "src/e9patch/wasm/binaryen.wasm" ]; then
-            echo "Including binaryen.wasm from src/"
-            cp src/e9patch/wasm/binaryen.wasm .cosmo/
-          fi
-          
-          # Create the resources archive
-          zip -r resources.zip .cosmo/
-          
-          # List what's being embedded
-          echo "Contents of resources.zip:"
-          unzip -l resources.zip
-
-      - name: Create e9studio APE with embedded ZipOS
-        run: |
-          cp build/e9studio.com build/e9studio.com.bak
-          cat resources.zip >> build/e9studio.com
-          chmod +x build/e9studio.com
-          
-          # Verify the embedded ZIP content
-          echo "Verifying embedded ZipOS in APE binary:"
-          unzip -l build/e9studio.com 2>/dev/null | tail -10 || true
-
-      - name: Verify APE on Linux
-        run: |
-          # Self-test may fail on some runners due to APE loader issues
-          # The build is still valid - the test is informational
-          ./build/e9studio.com --self-test || echo "Self-test had issues (non-fatal)"
-          echo "Linux x86_64 verification: COMPLETE"
-
-      - name: Upload APE artifact
+      - name: Upload APE artifacts
         uses: actions/upload-artifact@v4
         with:
           name: e9studio-ape
-          path: build/e9studio.com
+          path: |
+            build/e9studio.com
+            build/unit/*.com
 
-  # Alternative build using setup-cosmocc action (experimental)
-  build-ape-action:
-    runs-on: ubuntu-latest
-    continue-on-error: true  # Don't fail the workflow if this experimental job fails
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup cosmocc
-        uses: bjia56/setup-cosmocc@main
-        with:
-          version: latest
-
-      - name: Build e9studio (APE via action)
-        run: |
-          make -f Makefile.e9studio CC=cosmocc AR=cosmoar all
-
-      - name: Verify build
-        run: |
-          ls -la build/
-          file build/e9studio.com || true
-
-  # Test APE on macOS (Intel)
-  test-macos-intel:
+  run-ape:
     needs: build-ape
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
     steps:
-      - name: Download APE artifact
+      - name: Download APE artifacts
         uses: actions/download-artifact@v4
         with:
           name: e9studio-ape
 
-      - name: Setup APE loader for macOS Intel
+      - name: Run unit tests and self-test
         run: |
-          # On Intel Macs, APE files can run directly or via the loader
-          chmod +x e9studio.com
+          set -e
+          chmod +x e9studio.com unit/*.com || true
+          for t in unit/*.com; do echo "== $t"; ./"$t"; done
+          ./e9studio.com --self-test
 
-      - name: Test APE on macOS Intel
-        run: |
-          ./e9studio.com --self-test || echo "Self-test had issues (non-fatal)"
-          echo "macOS Intel (x86_64) verification: COMPLETE"
-
-  # Test APE on macOS (Apple Silicon)
-  test-macos-arm:
-    needs: build-ape
-    runs-on: macos-latest
-    steps:
-      - name: Download APE artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: e9studio-ape
-
-      - name: Setup APE loader for macOS ARM
-        run: |
-          chmod +x e9studio.com
-          # Apple Silicon requires Rosetta 2 or native ARM APE support
-          # Recent cosmocc versions include ARM64 support
-
-      - name: Test APE on macOS ARM
-        run: |
-          ./e9studio.com --self-test || echo "Self-test had issues (non-fatal)"
-          echo "macOS Apple Silicon (arm64) verification: COMPLETE"
-
-  # Build with cosmocc on macOS to test cross-platform toolchain
-  build-macos:
-    runs-on: macos-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Cache cosmocc toolchain (macOS)
-        id: cache-cosmocc-macos
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/cosmocc
-          key: cosmocc-${{ env.COSMOCC_VERSION }}-macos-v3
-
-      - name: Install cosmocc toolchain (macOS)
-        if: steps.cache-cosmocc-macos.outputs.cache-hit != 'true'
-        run: |
-          set -ex
-          mkdir -p $GITHUB_WORKSPACE/cosmocc
-          cd $GITHUB_WORKSPACE/cosmocc
-
-          # Download cosmocc
-          echo "Downloading cosmocc toolchain..."
-          curl -fsSL "https://cosmo.zip/pub/cosmocc/cosmocc.zip" -o cosmocc.zip
-
-          echo "Extracting..."
-          unzip -q cosmocc.zip
-          rm cosmocc.zip
-
-          # Verify
-          echo "Installed cosmocc toolchain:"
-          ls -la $GITHUB_WORKSPACE/cosmocc/bin/ | head -10
-          $GITHUB_WORKSPACE/cosmocc/bin/cosmocc --version || true
-
-      - name: Build e9studio on macOS
-        run: |
-          make -f Makefile.e9studio CC=$GITHUB_WORKSPACE/cosmocc/bin/cosmocc AR=$GITHUB_WORKSPACE/cosmocc/bin/cosmoar all
-
-      - name: Test build
-        run: |
-          chmod +x build/e9studio.com
-          ./build/e9studio.com --self-test || echo "Self-test complete"
-
-  # Native Linux build for fast CI testing
+  # Host-compiler build for fast feedback (not an APE, no ZipOS)
   test-native-linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential zip
+      - name: Build and check (native gcc)
+        run: make -f Makefile.e9studio CC=gcc AR=ar check
 
-      - name: Build and test (native gcc)
-        run: |
-          make -f Makefile.e9studio CC=gcc AR=ar all
-          make -f Makefile.e9studio CC=gcc AR=ar test
-
-      - name: Create embedded resources and verify
-        run: |
-          mkdir -p .cosmo
-          echo "E9Studio Test Build" > .cosmo/README
-          echo "test" > .cosmo/VERSION
-          
-          # Copy WASM modules if available (use nullglob to handle no matches gracefully)
-          shopt -s nullglob
-          for wasm in build/*.wasm src/e9patch/wasm/*.wasm; do
-            if [ -f "$wasm" ]; then
-              echo "Including $(basename $wasm) in ZipOS"
-              cp "$wasm" .cosmo/
-            fi
-          done
-          shopt -u nullglob
-          
-          zip -r resources.zip .cosmo/
-          cat resources.zip >> build/e9studio.com
-          ./build/e9studio.com --self-test
-          echo "Native Linux build test: PASSED"
-
-  # Release job - only uploads APE (it's cross-platform)
   release:
-    needs: [build-ape, test-macos-intel, test-macos-arm]
+    needs: [ build-ape, run-ape ]
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
+    permissions:
+      contents: write
     steps:
-      - name: Download APE artifact
+      - name: Download APE artifacts
         uses: actions/download-artifact@v4
         with:
           name: e9studio-ape

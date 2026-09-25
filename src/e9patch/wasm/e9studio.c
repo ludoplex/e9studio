@@ -20,6 +20,11 @@
  * License: GPLv3+
  */
 
+/* Cosmopolitan extensions (ShowCrashReports, GetProgramExecutableName, IsWindows...) */
+#if defined(__COSMOPOLITAN__) && !defined(_COSMO_SOURCE)
+#define _COSMO_SOURCE
+#endif
+
 /* Central config must be included first for feature test macros */
 #include "e9studio_config.h"
 
@@ -54,10 +59,6 @@
 #include "e9wasm_host.h"
 #include "../analysis/e9studio_analysis.h"
 #include "../e9livereload.h"
-
-#ifdef __linux__
-#include <sys/inotify.h>
-#endif
 
 /*
  * Platform detection helpers for Cosmopolitan
@@ -1052,6 +1053,11 @@ static int run_self_tests(void) {
  * Main entry point
  */
 int main(int argc, char **argv) {
+#ifdef __COSMOPOLITAN__
+    /* Symbolized backtraces on crash, on every OS (uses .symtab in ZipOS) */
+    ShowCrashReports();
+#endif
+
     /* Parse arguments */
     if (parse_args(argc, argv) < 0) {
         print_usage(argv[0]);

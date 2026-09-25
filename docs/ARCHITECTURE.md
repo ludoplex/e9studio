@@ -22,8 +22,8 @@ It enables real-time C source code changes to appear in running applications wit
    | File   |---->| cosmocc |---->| Binaryen |---->| APE   |---->|ICache |
    | Watch  |     | Compile |     | Diff     |     | Patch |     | Flush |
    +--------+     +---------+     +----------+     +-------+     +-------+
-   inotify/       .c -> .o        old.o vs        PE RVA      clear_cache
-   stat()                         new.o           -> offset
+   stat()         .c -> .o        old.o vs        PE RVA      clear_cache
+   polling        (posix_spawnp)  new.o           -> offset
 
    RESULT: Edit C source -> See changes in running app in ~200-500ms
 
@@ -118,10 +118,10 @@ It enables real-time C source code changes to appear in running applications wit
    STEP 1: FILE CHANGE DETECTION
    +--------------------------------------------------------------------+
    |                                                                     |
-   |   Linux:   inotify_add_watch(fd, path, IN_MODIFY | IN_CLOSE_WRITE) |
-   |   macOS:   kqueue + EVFILT_VNODE                                   |
-   |   Windows: ReadDirectoryChangesW()                                  |
-   |   Fallback: stat() polling every 100ms                             |
+   |   All OSes: stat() polling of *.c / *.h (mtime, ctime, size, inode) |
+   |   One code path in the APE; no inotify / kqueue / Windows-only API  |
+   |   (cosmocc does not define __linux__, so an inotify branch would    |
+   |   never be compiled into the portable binary)                       |
    |                                                                     |
    +--------------------------------------------------------------------+
                                     |
@@ -171,12 +171,13 @@ It enables real-time C source code changes to appear in running applications wit
    STEP 5: MEMORY PATCHING
    +--------------------------------------------------------------------+
    |                                                                     |
-   |   Linux:   process_vm_writev(pid, local_iov, remote_iov)           |
-   |   Windows: WriteProcessMemory(hProcess, addr, buf, size)           |
-   |   macOS:   vm_write(task, addr, data, size)                        |
+   |   Backend chosen at run time (IsLinux() / IsWindows()):             |
+   |   Linux:   pwrite(open("/proc/PID/mem"), buf, size, addr)           |
+   |   Windows: WriteProcessMemory(hProcess, addr, buf, size, &n)        |
+   |   macOS/BSD: self-patching only (remote not implemented)           |
    |                                                                     |
-   |   NO PTRACE NEEDED on Linux! process_vm_writev works without       |
-   |   stopping the target process (if same user or CAP_SYS_PTRACE).    |
+   |   No stop needed on Linux; the kernel applies the same ptrace-mode |
+   |   access check (same user, or CAP_SYS_PTRACE / Yama policy).       |
    |                                                                     |
    +--------------------------------------------------------------------+
                                     |

@@ -35,6 +35,11 @@
  * License: GPLv3+
  */
 
+/* Cosmopolitan extensions (ShowCrashReports, GetProgramExecutableName, IsWindows...) */
+#if defined(__COSMOPOLITAN__) && !defined(_COSMO_SOURCE)
+#define _COSMO_SOURCE
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,11 +47,15 @@
 #include <stdbool.h>
 #include <errno.h>
 
-#ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+
+#ifdef __COSMOPOLITAN__
+#include <cosmo.h>          /* GetProgramExecutableName() */
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>    /* _NSGetExecutablePath() */
 #endif
 
 #include "e9ape.h"
@@ -57,7 +66,7 @@
 #define APE_MAGIC_COSMO     "MZqFpD"
 #define APE_MAGIC_SHELL     "#!"
 #define PE_SIGNATURE        "PE\0\0"
-#define ELF_MAGIC           "\x7fELF"
+#define ELF_MAGIC           "\x7f" "ELF"   /* split: "\x7fE" would parse as one out-of-range escape */
 #define ZIP_LOCAL_MAGIC     "PK\x03\x04"
 #define ZIP_CENTRAL_MAGIC   "PK\x01\x02"
 #define ZIP_END_MAGIC       "PK\x05\x06"
@@ -678,7 +687,12 @@ bool e9_ape_zipos_exists(const uint8_t *data, size_t size,
 
 const char *e9_ape_get_self_path(void)
 {
-#ifdef __linux__
+#ifdef __COSMOPOLITAN__
+    /* Works on every OS the APE runs on (cosmocc does not define __linux__,
+     * __APPLE__ or _WIN32, so the native branches below are never taken). */
+    const char *self = GetProgramExecutableName();
+    return (self && *self) ? self : NULL;
+#elif defined(__linux__)
     static char path[4096];
     ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
     if (len > 0)
@@ -690,10 +704,6 @@ const char *e9_ape_get_self_path(void)
     static char path[4096];
     uint32_t size = sizeof(path);
     if (_NSGetExecutablePath(path, &size) == 0)
-        return path;
-#elif defined(_WIN32)
-    static char path[4096];
-    if (GetModuleFileNameA(NULL, path, sizeof(path)) > 0)
         return path;
 #endif
     return NULL;
